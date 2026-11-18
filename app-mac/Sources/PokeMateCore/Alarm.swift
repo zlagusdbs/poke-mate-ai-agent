@@ -43,9 +43,12 @@ public struct Alarm: Identifiable, Codable, Equatable {
     public var timeoutMinutes: Int?
     public var useWorkSessions: Bool?
     public var useRolePipeline: Bool?
+    public var useDomainReviewer: Bool?
 
     public var workSessions: Bool { trigger != nil && canWrite && (useWorkSessions ?? false) }
     public var rolePipeline: Bool { workSessions && (useRolePipeline ?? false) }
+    public var reviewsPullRequests: Bool { trigger?.event == "github.review_requested" }
+    public var domainReviewer: Bool { workSessions && reviewsPullRequests && (useDomainReviewer ?? true) }
 
     public static let timeoutChoices = [30, 60, 90, 120]
 

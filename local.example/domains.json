@@ -1,9 +1,24 @@
 {
   "acme": {
-    "repos": ["acme-sample-service", "acme-sample-web"],
-    "knowledge": ["acme-kb", "~/.claude/references/acme-wiki"]
+    "repos": [
+      "acme-sample-service",
+      "acme-sample-web"
+    ],
+    "knowledge": [
+      "acme-kb",
+      "~/.claude/references/acme-wiki"
+    ],
+    "description": "쿠폰·할인: 쿠폰 발급·사용·쿠폰함·할인 정책",
+    "keywords": [
+      "쿠폰",
+      "coupon",
+      "할인",
+      "쿠폰함"
+    ]
   },
   "default": {
-    "knowledge": ["acme-kb"]
+    "knowledge": [
+      "acme-kb"
+    ]
   }
 }

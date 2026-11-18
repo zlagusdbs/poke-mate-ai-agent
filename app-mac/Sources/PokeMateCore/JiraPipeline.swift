@@ -25,11 +25,16 @@ public struct DomainMap: Equatable, Sendable {
     public var domains: [String: [String]]
     public var knowledge: [String: [String]]
     public var defaultKnowledge: [String]
+    public var descriptions: [String: String] = [:]
+    public var keywords: [String: [String]] = [:]
 
-    public init(domains: [String: [String]] = [:], knowledge: [String: [String]] = [:], defaultKnowledge: [String] = []) {
+    public init(domains: [String: [String]] = [:], knowledge: [String: [String]] = [:], defaultKnowledge: [String] = [],
+                descriptions: [String: String] = [:], keywords: [String: [String]] = [:]) {
         self.domains = domains
         self.knowledge = knowledge
         self.defaultKnowledge = defaultKnowledge
+        self.descriptions = descriptions
+        self.keywords = keywords
     }
 
     public static let defaultKey = "default"
@@ -43,13 +48,21 @@ public struct DomainMap: Equatable, Sendable {
         }
         var map: [String: [String]] = [:]
         var knowledge: [String: [String]] = [:]
+        var descriptions: [String: String] = [:]
+        var keywords: [String: [String]] = [:]
         for (name, value) in object {
             let key = name.trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty, !key.contains(":"), key != defaultKey else { continue }
             map[key] = list(value, "repos")
             if (value as? [String: Any])?["knowledge"] != nil { knowledge[key] = list(value, "knowledge") }
+            if let text = ((value as? [String: Any])?["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                descriptions[key] = text
+            }
+            let words = list(value, "keywords")
+            if !words.isEmpty { keywords[key] = words }
         }
-        return DomainMap(domains: map, knowledge: knowledge, defaultKnowledge: list(object[defaultKey], "knowledge"))
+        return DomainMap(domains: map, knowledge: knowledge, defaultKnowledge: list(object[defaultKey], "knowledge"),
+                         descriptions: descriptions, keywords: keywords)
     }
 
     public static func load(from file: URL = file) -> DomainMap {

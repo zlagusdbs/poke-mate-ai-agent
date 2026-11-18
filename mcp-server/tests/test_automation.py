@@ -580,3 +580,31 @@ def test_deploy_approve(env, monkeypatch, capsys):
 
     assert run("deploy-approve", "--id", "99") == 1
     assert json.loads(capsys.readouterr().out)["failed"] == [{"id": "99", "reason": "내가 승인할 배포 목록에 없음"}]
+
+
+def test_gh_file_reads_only_review_repo(env, monkeypatch, capsys):
+    import base64
+    calls = []
+    monkeypatch.setattr(automation, "gh_api", lambda path, params=None: calls.append((path, params)) or {"encoding": "base64", "content": base64.b64encode("hello".encode()).decode()})
+    monkeypatch.setenv("POKEMATE_REVIEW_REPO", "acme/sample-web")
+    assert run("gh-file", "--repo", "acme/sample-web", "--ref", "abc", "--path", "/src/a.js") == 0
+    assert capsys.readouterr().out == "hello" and calls == [("repos/acme/sample-web/contents/src/a.js", {"ref": "abc"})]
+    with pytest.raises(SystemExit):
+        run("gh-file", "--repo", "acme/other", "--ref", "abc", "--path", "a.js")
+    with pytest.raises(SystemExit):
+        run("gh-file", "--repo", "acme/sample-web", "--ref", "abc", "--path", "../secret")
+    monkeypatch.delenv("POKEMATE_REVIEW_REPO")
+    assert run("gh-file", "--repo", "acme/other", "--ref", "abc", "--path", "a.js") == 0
+
+
+def test_domain_note_appends_once(env, capsys):
+    from pokemate.connections import local_dir
+    assert run("domain-note", "--domain", "acme", "--source", "sample-web#1", "--text", "쿠폰함은  제외 상품을 숨긴다 (근거: a.js)") == 0
+    assert run("domain-note", "--domain", "acme", "--source", "sample-web#2", "--text", "쿠폰함은 제외 상품을 숨긴다 (근거: a.js)") == 0
+    out = capsys.readouterr().out
+    assert "skipped" in out
+    text = (local_dir() / "domains" / "acme.md").read_text(encoding="utf-8")
+    assert text.startswith("# acme 도메인 메모") and text.count("- 쿠폰함은 제외 상품을 숨긴다") == 1 and "출처: sample-web#1" in text
+    for bad in ("../x", "a/b", "a:b"):
+        with pytest.raises(SystemExit):
+            run("domain-note", "--domain", bad, "--source", "s", "--text", "t")

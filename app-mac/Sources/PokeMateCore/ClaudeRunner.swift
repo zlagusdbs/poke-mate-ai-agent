@@ -29,7 +29,8 @@ public final class ClaudeRunner: @unchecked Sendable {
 
     public func run(prompt: String, images: [ImageAttachment] = [], sessionId: String?, settings: AppSettings,
                     writeTools: [String] = [], writeDirs: [String] = [], hooks: ToolHooks? = nil,
-                    timeout: TimeInterval = ClaudeRunner.timeout, newSessionId: String? = nil, automation: Bool = true) async -> ClaudeResponse {
+                    timeout: TimeInterval = ClaudeRunner.timeout, newSessionId: String? = nil, automation: Bool = true,
+                    extraEnvironment: [String: String] = [:]) async -> ClaudeResponse {
         cancelled = false
         lastUsage = nil
         guard FileManager.default.isExecutableFile(atPath: settings.claudePath) else {
@@ -56,7 +57,7 @@ public final class ClaudeRunner: @unchecked Sendable {
                 out = try await interactive.run(executable: settings.claudePath, arguments: args,
                                                 firstLine: ClaudeCommand.inputLine(prompt: prompt, images: images),
                                                 workDir: AppPaths.workDir,
-                                                environment: AppPaths.processEnvironment(settings: settings),
+                                                environment: AppPaths.processEnvironment(settings: settings).merging(extraEnvironment) { _, new in new },
                                                 timeout: max(timeout, Self.interactiveTimeout)) { line, io in
                     guard let object = ClaudeStream.object(line) else { return }
                     if let request = ClaudeStream.permissionRequest(object) {
@@ -73,7 +74,7 @@ public final class ClaudeRunner: @unchecked Sendable {
                 out = try await process.run(executable: settings.claudePath, arguments: args,
                                             stdin: ClaudeCommand.inputLine(prompt: prompt, images: images),
                                             workDir: AppPaths.workDir,
-                                            environment: AppPaths.processEnvironment(settings: settings),
+                                            environment: AppPaths.processEnvironment(settings: settings).merging(extraEnvironment) { _, new in new },
                                             timeout: timeout)
             }
             lastUsage = RunUsage.parse(stdout: out.stdout)

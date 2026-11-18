@@ -92,7 +92,7 @@ struct WorkTabView: View {
     }
 
     static func domains(_ sessions: [WorkSession], pipelines: [String: PipelineState]) -> [String] {
-        Array(Set(sessions.compactMap { PipelineRole.split($0.repo)?.domain } + pipelines.keys)).sorted()
+        Array(Set(sessions.compactMap { PipelineRole.split($0.repo)?.domain } + pipelines.keys + WorkSessionCenter.shared.reviewing.keys)).sorted()
     }
 
     private func domainBlock(_ domain: String) -> some View {
@@ -108,8 +108,15 @@ struct WorkTabView: View {
                         .background((state.isActive ? Color.orange : Color.secondary).opacity(0.15), in: Capsule())
                     if state.totalCost > 0 { Text(TokenFormat.usd(state.totalCost)).font(.caption2).foregroundStyle(.secondary).monospacedDigit() }
                 }
+                if let review = center.reviewing[domain] {
+                    Text(review).font(.caption2.weight(.bold)).foregroundStyle(Color.orange).lineLimit(1)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.15), in: Capsule())
+                        .help(review)
+                }
                 if let waiting = center.queued[domain], !waiting.isEmpty {
                     Text("대기 \(waiting.count)").font(.caption2).foregroundStyle(.secondary)
+                        .help(waiting.joined(separator: "\n"))
                 }
                 Spacer()
             }
@@ -117,7 +124,7 @@ struct WorkTabView: View {
             ForEach(PipelineRole.allCases, id: \.self) { role in
                 let key = PipelineRole.sessionKey(domain: domain, role: role)
                 if let session = center.book.sessions[key] {
-                    row(session, name: role.label, active: state?.isActive == true && state?.role == role)
+                    row(session, name: role.label, active: (state?.isActive == true && state?.role == role) || (role == .reviewer && center.reviewing[domain] != nil))
                         .padding(.leading, 12)
                 } else {
                     Text("\(role.label) · 아직 없음").font(.caption).foregroundStyle(.secondary)

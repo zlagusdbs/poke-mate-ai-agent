@@ -131,6 +131,16 @@ deny 에 있는 것은 승인 카드 없이 거부한다. 고친 내용은 다�
 
 메이트 대화에서 "NOVA-1234 어느 세션에서 처리했어?", "지금 자동 처리 뭐 하고 있어?" 처럼 물으면 조회 도구 `work_sessions` 로 답한다. 지금 실행 중·대기 중인 건은 앱이 `automation/sessions-live.json` 에 남긴다.
 
+### 도메인 리뷰어 (GitHub 리뷰)
+
+GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + 작업 세션)은 기본으로 "도메인 리뷰어 세션으로 리뷰"가 켜져 있다. 레포 이름 세션이 아니라 도메인의 리뷰어 세션(`{도메인}:reviewer`, Jira 역할별 처리의 리뷰어와 같은 세션)에서 리뷰해 지식이 한곳에 쌓인다.
+
+1. **도메인 정하기**: PR 레포가 `local/domains.json` 의 `repos` 에 있으면 그 도메인. 없으면 예전에 정한 기록(`automation/state/review-domains.json`)을 쓰고, 그것도 없으면 PR 제목·본문·바뀐 파일·연결 Jira 를 도메인마다 적은 `description`·`keywords` 와 비교해 정하는 읽기 전용 실행을 한 번 돌린다. 어디에도 맞지 않으면 `default`. 정한 도메인과 이유는 리뷰 본문 "확인한 범위"와 시작 알림, 작업 탭에 보인다. 잘못 정했으면 `domains.json` 의 `repos` 에 넣거나 기록 파일에서 그 줄을 지운다.
+2. **세션**: 처음이면 그 도메인의 지식 저장소 목차와 도메인 메모를 읽어 요약한 뒤 리뷰하고, 이어 쓰면 새로 필요한 것만 읽는다. 같은 도메인의 Jira 역할별 처리와 차례(큐)를 같이 쓴다. 기다리는 건은 작업 탭 도메인 줄의 "대기 n"(마우스를 올리면 목록)에 보인다.
+3. **도메인 메모**: `local/domains/{도메인}.md`. 리뷰·처리 중 코드·문서로 직접 확인한 도메인 사실만 근거와 함께 `pokemate auto domain-note` 로 한 줄씩 남긴다(추측·미확인은 남기지 않음). 같은 도메인 세션들이 처음에 읽고, 이후 키워드로 찾아 쓴다.
+4. **지식과 승인**: 리뷰 전에 지식 저장소·위키·연결 Jira 를 읽고 "참고한 근거"를 적는다. 스킬 후보는 결함·결함 아님·미확인으로 나누고, 미확인이 하나라도 있으면 승인하지 않고 질문을 담은 댓글 리뷰로 올린다.
+5. **로컬 레포가 없을 때**: `pokemate auto gh-file --repo … --ref … --path …` 로 PR 저장소 파일을 읽는다(읽기 전용, 리뷰 중에는 그 PR 저장소만).
+
 ### 역할별 처리 (Jira)
 
 트리거 알람에서 "레포별 작업 세션 이어 쓰기" 아래 "역할별 세션으로 나눠 처리"를 켜면, 레포 세션 하나가 다 하던 Jira 처리를 역할 세션 4개(PM·개발·테스터·리뷰어)가 나눠 맡는다.
@@ -169,6 +179,8 @@ uv --directory <저장소>/mcp-server run --quiet pokemate auto <하위명령> [
 | `run-tests` | worktree 에서 빌드·테스트 (설정 `testCommands` 또는 gradlew·mvnw·npm·pytest·swift·go 감지, 20분), 결과 JSON |
 | `commit-push` | worktree 의 `feature/` 브랜치에 커밋·push (메시지는 `feat:` 등 한 줄, Jira 키·Co-Authored-By 거절, force 없음) |
 | `gh-get` · `gh-diff` | GitHub 조회 |
+| `gh-file` | PR 저장소 파일 내용 읽기 (읽기 전용, 리뷰 중에는 그 PR 저장소만) |
+| `domain-note` | 도메인 메모(`local/domains/{도메인}.md`)에 코드·문서로 확인한 사실 한 줄 추가 (같은 줄은 건너뜀) |
 | `gh-review` | 리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절) |
 | `deploy-approve` | 내가 승인자인 승인 대기 배포를 승인 (`--id` 한 건만, `--dry-run` 대상만 출력). 내가 만든 배포는 건너뛰고, 승인되면 배포 시스템이 배치를 시작한다. 결과 JSON, 활동 기록에 남김 |
 | `write-note` | 댓글·리뷰 본문 파일 쓰기 |

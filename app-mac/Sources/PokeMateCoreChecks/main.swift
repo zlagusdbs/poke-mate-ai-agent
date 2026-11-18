@@ -1382,5 +1382,38 @@ do {
     check(split?.model == "opus" && split?.automationModel == "sonnet" && split?.automationEffort == "low", "model: 대화·자동 처리 모델은 따로 저장")
 }
 
+// MARK: 도메인 리뷰어
+do {
+    let target = ReviewTarget.parse(url: "https://git.example.com/acme/sample-web/pull/280")
+    check(target?.fullName == "acme/sample-web" && target?.number == 280 && target?.label == "sample-web#280"
+          && ReviewTarget.parse(url: "https://git.example.com/acme/sample-web/issues/3") == nil, "review: PR 주소 읽기")
+    let map = DomainMap.parse(Data(#"{"acme": {"repos": ["acme-sample-service"], "description": "쿠폰·할인", "keywords": ["쿠폰", "coupon"], "knowledge": ["acme-kb"]}, "beta": {"repos": ["beta-api"]}, "default": {"knowledge": ["sample-notes"]}}"#.utf8))
+    check(map.descriptions["acme"] == "쿠폰·할인" && map.keywords["acme"] == ["쿠폰", "coupon"] && map.keywords["beta"] == nil, "review: 도메인 설명·키워드 읽기")
+    let inRepo = ReviewTarget(owner: "acme", repo: "acme-sample-service", number: 1, url: "u")
+    let explicit = DomainReview.known(inRepo, map: map, book: ReviewDomainBook(repos: ["acme/acme-sample-service": ReviewDomainChoice(domain: "beta", why: "x", at: Date())]))
+    check(explicit?.domain == "acme" && explicit?.source == .explicit, "review: domains.json repos 가 예전 기록보다 이김")
+    let other = ReviewTarget(owner: "acme", repo: "sample-web", number: 2, url: "u")
+    var book = ReviewDomainBook()
+    check(DomainReview.known(other, map: map, book: book) == nil, "review: 처음 보는 레포는 도메인 정하기로")
+    book.repos[other.fullName] = ReviewDomainChoice(domain: "acme", why: "쿠폰함 화면", at: Date())
+    check(DomainReview.known(other, map: map, book: book)?.source == .learned
+          && DomainReview.known(other, map: map, book: ReviewDomainBook(repos: [other.fullName: ReviewDomainChoice(domain: "gone", why: "", at: Date())])) == nil,
+          "review: 정해 둔 기록을 쓰고, 없어진 도메인 기록은 무시")
+    let chooser = DomainReview.choosePrompt(target: other, map: map, helper: "H")
+    check(chooser.contains("- acme · 쿠폰·할인 · 키워드: 쿠폰, coupon · 레포: acme-sample-service") && chooser.contains("- default ·")
+          && chooser.contains("H gh-get repos/acme/sample-web/pulls/2/files"), "review: 도메인 정하기 안내에 목록·설명·키워드")
+    check(DomainReview.extract(from: "답\n```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"쿠폰함\"}\n```", map: map)! == ("acme", "쿠폰함")
+          && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"nope\"}\n```", map: map) == nil
+          && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"default\"}\n```", map: map)?.domain == "default",
+          "review: 도메인 블록 읽기 (없는 도메인은 거절, default 는 됨)")
+    let memo = DomainReview.memoFile("acme", local: URL(fileURLWithPath: "/r/local"))
+    let first = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, memo: memo, memoLines: 0, helper: "H", context: "본문")
+    let again = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .learned, firstRun: false, memo: memo, memoLines: 12, helper: "H", context: "본문")
+    check(memo.path == "/r/local/domains/acme.md" && DomainReview.sessionKey("acme") == "acme:reviewer"
+          && first.contains("세션 acme:reviewer") && first.contains("첫 실행") && first.contains("아직 없음") && first.hasSuffix("본문")
+          && again.contains("새로 필요한 것만") && again.contains("(12줄)") && again.contains("H gh-file --repo acme/sample-web")
+          && again.contains("H domain-note --domain acme") && again.contains("추측·미확인"), "review: 리뷰어 세션 안내 (첫 실행·이어 쓰기·메모·gh-file·domain-note)")
+}
+
 print("passed: \(passed), failed: \(failures)")
 exit(failures == 0 ? 0 : 1)

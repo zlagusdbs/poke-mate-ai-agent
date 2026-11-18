@@ -90,6 +90,8 @@ final class TriggerWatcher {
         let access = alarm.canWrite ? ClaudeCommand.loadWriteAccess() : ClaudeCommand.WriteAccess()
         if alarm.rolePipeline {
             WorkSessionCenter.shared.handlePipeline(alarm: alarm, item: item, prompt: prompt, title: title, chat: model.chat, completion: finish)
+        } else if alarm.domainReviewer && !access.tools.isEmpty {
+            WorkSessionCenter.shared.handleReview(alarm: alarm, item: item, prompt: prompt, title: title, access: access, chat: model.chat, completion: finish)
         } else if alarm.workSessions && !access.tools.isEmpty {
             WorkSessionCenter.shared.handle(alarm: alarm, item: item, prompt: prompt, title: title, access: access, chat: model.chat, completion: finish)
         } else if alarm.canWrite && !access.tools.isEmpty {

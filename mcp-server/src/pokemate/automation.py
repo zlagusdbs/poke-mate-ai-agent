@@ -831,6 +831,54 @@ def cmd_gh_diff(args):
     return run_checked(["gh", "pr", "diff", str(args.pr), "-R", args.repo], env=gh_env())
 
 
+REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def cmd_gh_file(args):
+    if not REPO_NAME.match(args.repo):
+        raise SystemExit("repo must look like owner/name")
+    allowed = os.environ.get("POKEMATE_REVIEW_REPO")
+    if allowed and args.repo.lower() != allowed.lower():
+        raise SystemExit(f"gh-file: 이번 리뷰 저장소({allowed})만 읽을 수 있어요")
+    path = args.path.strip().lstrip("/")
+    if not path or ".." in path.split("/"):
+        raise SystemExit("bad path")
+    data = gh_api(f"repos/{args.repo}/contents/{path}", {"ref": args.ref})
+    if isinstance(data, list):
+        print("\n".join(sorted(f"{x.get('type')}\t{x.get('path')}" for x in data)))
+        return 0
+    if (data or {}).get("encoding") != "base64":
+        raise SystemExit("gh-file: 파일 내용을 받지 못했어요")
+    import base64
+    sys.stdout.write(base64.b64decode(data.get("content") or "").decode("utf-8", "replace"))
+    return 0
+
+
+DOMAIN_NAME = re.compile(r"^[^/\\:\s.][^/\\:\s]*$")
+MEMO_WARN_LINES = 300
+
+
+def cmd_domain_note(args):
+    from .connections import local_dir
+    if not DOMAIN_NAME.match(args.domain):
+        raise SystemExit("bad domain name")
+    text = " ".join(args.text.split())
+    if not text:
+        raise SystemExit("empty note")
+    folder = local_dir() / "domains"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{args.domain}.md"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else [f"# {args.domain} 도메인 메모", ""]
+    if any(line.startswith(f"- {text} (") for line in lines):
+        print(f"skipped: already noted ({path})")
+        return 0
+    lines.append(f"- {text} (출처: {args.source}, {now().strftime('%Y-%m-%d')})")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    count = sum(1 for line in lines if line.startswith("- "))
+    print(f"noted {path} ({count}줄)" + (f" · {MEMO_WARN_LINES}줄이 넘었어요. 정리가 필요해요" if count > MEMO_WARN_LINES else ""))
+    return 0
+
+
 def cmd_gh_review(args):
     if args.event not in ("APPROVE", "COMMENT"):
         raise SystemExit("event must be APPROVE or COMMENT")
@@ -1241,6 +1289,18 @@ def main(argv=None):
     gd.add_argument("--repo", required=True, help="owner/repo")
     gd.add_argument("--pr", required=True, type=int, help="PR 번호")
     gd.set_defaults(func=cmd_gh_diff)
+
+    gf = sub.add_parser("gh-file", help="PR 저장소의 파일 내용 읽기 (읽기 전용, 리뷰 중이면 그 저장소만)", description="PR 저장소의 파일 내용 읽기 (읽기 전용, 리뷰 중이면 그 저장소만)")
+    gf.add_argument("--repo", required=True, help="owner/repo")
+    gf.add_argument("--ref", required=True, help="커밋 sha 또는 브랜치")
+    gf.add_argument("--path", required=True, help="파일 또는 폴더 경로")
+    gf.set_defaults(func=cmd_gh_file)
+
+    dn = sub.add_parser("domain-note", help="도메인 메모(local/domains/{도메인}.md)에 확인한 사실 한 줄 추가", description="도메인 메모(local/domains/{도메인}.md)에 확인한 사실 한 줄 추가")
+    dn.add_argument("--domain", required=True, help="도메인 이름")
+    dn.add_argument("--source", required=True, help="출처 (예: sample-web#123, ACME-1)")
+    dn.add_argument("--text", required=True, help="코드·문서로 확인한 사실과 근거")
+    dn.set_defaults(func=cmd_domain_note)
 
     gr = sub.add_parser("gh-review", help="리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절)", description="리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절)")
     gr.add_argument("--repo", required=True, help="owner/repo")
