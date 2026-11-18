@@ -1357,7 +1357,7 @@ do {
     try? #"{"permissions": {"deny": ["Bash(rm:*)"], "allow": []}}"#.write(to: perm, atomically: true, encoding: .utf8)
     let merged = ClaudeCommand.installPermissions(at: perm, dataDir: URL(fileURLWithPath: "/d"), localDir: URL(fileURLWithPath: "/r/local"))
     let deny = ((try? JSONSerialization.jsonObject(with: Data(contentsOf: perm))) as? [String: Any]).flatMap { ($0["permissions"] as? [String: Any])?["deny"] as? [String] } ?? []
-    check(merged && deny.first == "Bash(rm:*)" && deny.contains("Edit(//r/local/alarms.json)") && deny.contains("Write(//r/local/domains.json)")
+    check(merged && deny.first == "Bash(rm:*)" && deny.contains("Edit(//r/local/write-tools.json)") && !deny.contains("Edit(//r/local/alarms.json)") && deny.contains("Write(//r/local/domains.json)")
           && !ClaudeCommand.installPermissions(at: perm, dataDir: URL(fileURLWithPath: "/d"), localDir: URL(fileURLWithPath: "/r/local")),
           "layers: 기존 권한 파일에 local 설정 파일 쓰기 금지를 더함 (있던 것은 그대로)")
     try? fm.removeItem(at: root)

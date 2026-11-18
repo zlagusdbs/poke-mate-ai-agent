@@ -170,6 +170,7 @@ uv --directory <저장소>/mcp-server run --quiet pokemate auto <하위명령> [
 | `commit-push` | worktree 의 `feature/` 브랜치에 커밋·push (메시지는 `feat:` 등 한 줄, Jira 키·Co-Authored-By 거절, force 없음) |
 | `gh-get` · `gh-diff` | GitHub 조회 |
 | `gh-review` | 리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절) |
+| `deploy-approve` | 내가 승인자인 승인 대기 배포를 승인 (`--id` 한 건만, `--dry-run` 대상만 출력). 내가 만든 배포는 건너뛰고, 승인되면 배포 시스템이 배치를 시작한다. 결과 JSON, 활동 기록에 남김 |
 | `write-note` | 댓글·리뷰 본문 파일 쓰기 |
 | `jira-state` · `review-state` | 처리 결과 저장 (다시 처리하지 않게). `jira-state --waiting` 은 "확인 필요" 답을 기다리는 표시 |
 

@@ -78,7 +78,7 @@ public enum ClaudeCommand {
         let guarded = ["./.claude/**", "/" + dataDir.appendingPathComponent("write-tools.json").path,
                        "/" + dataDir.appendingPathComponent("alarms.json").path,
                        "/" + dataDir.appendingPathComponent("settings.json").path]
-            + ["write-tools.json", "alarms.json", "pipeline-tools.json", "domains.json"].map { "/" + localDir.appendingPathComponent($0).path }
+            + ["write-tools.json", "pipeline-tools.json", "domains.json"].map { "/" + localDir.appendingPathComponent($0).path }
         return commands.map { "Bash(\($0):*)" } + guarded.flatMap { ["Edit(\($0))", "Write(\($0))"] }
     }
 
