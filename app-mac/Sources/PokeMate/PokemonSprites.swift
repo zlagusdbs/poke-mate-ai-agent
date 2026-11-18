@@ -48,8 +48,8 @@ final class PokemonSprites: ObservableObject {
         return NSImage(cgImage: cropped, size: NSSize(width: cropped.width, height: cropped.height))
     }
 
-    func menuBarIcon(species: MateSpecies, tokens: Int, final: Int?, height: CGFloat = 20) -> NSImage? {
-        guard let form = species.form(tokens: tokens, final: final) else {
+    func menuBarIcon(species: MateSpecies, tokens: Int, final: Int?, shown: Int? = nil, height: CGFloat = 20) -> NSImage? {
+        guard let form = species.shownForm(tokens: tokens, final: final, shown: shown) else {
             return Self.pixelImage(grid: MateSpecies.eggGrid, palette: species.eggPalette(), side: height)
         }
         guard let sprite = image(form.id) else { return nil }

@@ -55,6 +55,18 @@ class BasicClient:
             raise RequestRejected(self.system, _reason(response))
         response.raise_for_status()
 
+    def _patch(self, path: str, body) -> None:
+        """JSON Patch 전송. 401 은 인증 만료, 403 과 그 밖의 4xx 는 시스템이 거절한 것."""
+        try:
+            response = self._client.patch(path, json=body)
+        except httpx.TransportError as e:
+            raise NetworkUnreachable(self.system, str(e)) from e
+        if response.status_code == 401:
+            raise AuthExpired(self.system, "HTTP 401")
+        if 400 <= response.status_code < 500:
+            raise RequestRejected(self.system, _reason(response))
+        response.raise_for_status()
+
 
 def _reason(response: httpx.Response) -> str:
     """Jira 식 오류 응답({errorMessages, errors})을 한 줄로."""
@@ -62,5 +74,9 @@ def _reason(response: httpx.Response) -> str:
         data = response.json()
     except ValueError:
         return f"HTTP {response.status_code}"
+    if not isinstance(data, dict):
+        return f"HTTP {response.status_code}"
+    if data.get("message"):
+        return f"HTTP {response.status_code}: {data['message']}"
     parts = list(data.get("errorMessages") or []) + [f"{k}: {v}" for k, v in (data.get("errors") or {}).items()]
     return "; ".join(parts) or f"HTTP {response.status_code}"

@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 from . import credentials
 from .connections import find_system, load_settings, local_dir
 from .credentials import data_dir
+from .deploy_client import DeployClient
+from .errors import PokeMateError
 from .jira_client import AUTO_COMMENT_PREFIX, QUESTION_PREFIX, JiraClient
 from .trial import FakeJira, overlay, trial_dir
 
@@ -764,6 +766,52 @@ def cmd_jira_transition(args):
     return 0
 
 
+def deploy():
+    system = find_system("deploy")
+    cred = credentials.load("deploy")
+    if system is None or not system.enabled or not system.base_url or cred is None:
+        raise SystemExit("배포 시스템이 연결돼 있지 않아요. PokeMate 연결 메뉴에서 연결해 주세요")
+    return system, cred, DeployClient(system.base_url, cred)
+
+
+def cmd_deploy_approve(args):
+    """내가 승인자인 승인 대기 배포를 승인한다. 대상은 '내가 승인할 배포' 목록에 있는 것뿐이다."""
+    system, cred, client = deploy()
+    me = (cred.username or "").split("\\")[-1].split("@")[0].lower()
+    web = (system.web_url or system.base_url or "").rstrip("/")
+    try:
+        pending = client.approvals()
+    except PokeMateError as e:
+        raise SystemExit(f"승인 대기 목록을 읽지 못했어요: {e}")
+    approved, skipped, failed = [], [], []
+    for r in pending:
+        if args.id and str(r["id"]) != str(args.id):
+            continue
+        row = {"id": r["id"], "summary": r["summary"], "requester": r["creatingUser"]}
+        if (r.get("status") or "").lower() != "open":
+            skipped.append({**row, "reason": f"승인 대기가 아님 ({r.get('status')})"})
+            continue
+        if (r.get("creatingUser") or "").lower() == me:
+            skipped.append({**row, "reason": "내가 만든 배포"})
+            continue
+        try:
+            name = client.domain_name(r["domainId"])
+            if not name:
+                raise SystemExit(f"도메인 {r['domainId']} 이름을 찾지 못했어요")
+            row.update(domain=name, url=f"{web}/{name}/releases/{r['id']}")
+            if not args.dry_run:
+                client.approve(name, r["id"])
+                append_event({"source": "deploy", "task": "deploy-approve", "event": "approved", "key": str(r["id"]),
+                              "title": r["summary"], "result": f"{name} · 요청자 {r['creatingUser']}", "url": row["url"]})
+            approved.append(row)
+        except (PokeMateError, SystemExit) as e:
+            failed.append({**row, "reason": str(e)})
+    if args.id and not (approved or skipped or failed):
+        failed.append({"id": args.id, "reason": "내가 승인할 배포 목록에 없음"})
+    print_json({"dryRun": bool(args.dry_run), "approved": approved, "skipped": skipped, "failed": failed})
+    return 1 if failed else 0
+
+
 def gh_env():
     return {**os.environ, "GH_HOST": gh_host()}
 
@@ -1259,6 +1307,11 @@ def main(argv=None):
     cp.add_argument("--worktree", required=True, help="worktree-add 가 출력한 경로")
     cp.add_argument("--message", required=True, help="feat:|fix:|refactor:|test:|docs: 로 시작하는 한 줄 (Jira 키·Co-Authored-By 불가)")
     cp.set_defaults(func=cmd_commit_push)
+
+    da = sub.add_parser("deploy-approve", help="내가 승인자인 승인 대기 배포를 승인 (내가 만든 배포는 건너뜀, 승인되면 배치가 시작됨), 결과 JSON", description="내가 승인자인 승인 대기 배포를 승인 (내가 만든 배포는 건너뜀, 승인되면 배치가 시작됨), 결과 JSON")
+    da.add_argument("--id", help="이 배포 id 한 건만. 비우면 승인 대기 전부")
+    da.add_argument("--dry-run", action="store_true", help="승인하지 않고 대상만 출력")
+    da.set_defaults(func=cmd_deploy_approve)
 
     args = p.parse_args(argv)
     return args.func(args)

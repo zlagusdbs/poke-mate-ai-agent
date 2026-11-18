@@ -852,7 +852,8 @@ struct MarkdownTableView: View {
 
     var body: some View {
         content
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .clipped()
             .background(GeometryReader { g in
                 Color.clear
                     .onAppear { width = g.size.width.rounded(.down) }

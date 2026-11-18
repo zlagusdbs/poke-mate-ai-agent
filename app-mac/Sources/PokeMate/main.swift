@@ -109,7 +109,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sizeWatch = PopoverSize.shared.$size.removeDuplicates().sink { [weak self] size in
             self?.popover.contentSize = size
         }
-        popover.contentViewController = NSHostingController(rootView: RootView(model: model))
+        let hosting = NSHostingController(rootView: RootView(model: model))
+        hosting.sizingOptions = []
+        popover.contentViewController = hosting
+        popover.contentSize = PopoverSize.shared.size
         rangeWatch = model.$settings.map(\.pokedexRange).removeDuplicates().sink { range in
             UsageStore.shared.applyRange(range)
         }
@@ -187,7 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusIcon(_ state: MateState) {
         guard let button = statusItem.button else { return }
         if let current = state.current, let species = UsageStore.shared.species(current.species),
-           let icon = PokemonSprites.shared.menuBarIcon(species: species, tokens: current.tokens, final: current.form) {
+           let icon = PokemonSprites.shared.menuBarIcon(species: species, tokens: current.tokens, final: current.form, shown: current.shown) {
             button.image = icon
         } else {
             button.image = PokemonSprites.emptyEggIcon()

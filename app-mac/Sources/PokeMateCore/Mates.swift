@@ -60,6 +60,13 @@ public struct MateSpecies: Identifiable, Equatable, Sendable {
 
     public func displayForm(tokens: Int, final: Int?) -> PokemonForm { form(tokens: tokens, final: final) ?? base }
 
+    public func shownForm(tokens: Int, final: Int?, shown: Int?) -> PokemonForm? {
+        guard let step = step(tokens: tokens, final: final) else { return nil }
+        let line = path(final)
+        if let shown, let i = line.firstIndex(where: { $0.id == shown }), i <= step { return line[i] }
+        return line[step]
+    }
+
     public func names() -> [String] { Array(Set(paths.flatMap { $0.map(\.name) })) }
 
     static let colors: [String: UInt32] = [
@@ -166,12 +173,14 @@ public struct CurrentMate: Codable, Equatable, Sendable {
     public var tokens: Int
     public var startedAt: Date
     public var form: Int?
+    public var shown: Int?
 
-    public init(species: String, tokens: Int, startedAt: Date, form: Int? = nil) {
+    public init(species: String, tokens: Int, startedAt: Date, form: Int? = nil, shown: Int? = nil) {
         self.species = species
         self.tokens = tokens
         self.startedAt = startedAt
         self.form = form
+        self.shown = shown
     }
 }
 
@@ -186,6 +195,30 @@ public struct CollectedMate: Codable, Equatable, Sendable {
         self.completedAt = completedAt
         self.days = days
         self.form = form
+    }
+}
+
+public struct DexEntry: Identifiable, Equatable, Sendable {
+    public let form: PokemonForm
+    public let species: MateSpecies
+    public var id: Int { form.id }
+
+    public init(form: PokemonForm, species: MateSpecies) {
+        self.form = form
+        self.species = species
+    }
+}
+
+public enum MateDex {
+    public static func entries(_ lines: [MateSpecies], maxDex: Int?) -> [DexEntry] {
+        var taken = Set<Int>()
+        var out: [DexEntry] = []
+        for line in lines {
+            for form in line.paths.flatMap({ $0 }) where (maxDex.map { form.id <= $0 } ?? true) && taken.insert(form.id).inserted {
+                out.append(DexEntry(form: form, species: line))
+            }
+        }
+        return out.sorted { $0.form.id < $1.form.id }
     }
 }
 
@@ -231,7 +264,32 @@ public struct MateState: Codable, Equatable, Sendable {
         return true
     }
 
+    public mutating func show(_ species: String, form id: Int, find: (String) -> MateSpecies? = MateSpecies.find) -> Bool {
+        guard let mate = raising(species), let line = find(species), let step = line.step(tokens: mate.tokens, final: mate.form),
+              let i = line.path(mate.form).firstIndex(where: { $0.id == id }), i <= step else { return false }
+        if current?.species != species { _ = makeRepresentative(species) }
+        current?.shown = i == step ? nil : id
+        return true
+    }
+
     public func count(of species: String) -> Int { collected.filter { $0.species == species }.count }
+
+    public func seenDex(find: (String) -> MateSpecies? = MateSpecies.find) -> Set<Int> {
+        var out = Set<Int>()
+        for mate in [current].compactMap({ $0 }) + party {
+            guard let line = find(mate.species), let step = line.step(tokens: mate.tokens, final: mate.form) else { continue }
+            out.formUnion(line.path(mate.form).prefix(step + 1).map(\.id))
+        }
+        for done in collected {
+            guard let line = find(done.species) else { continue }
+            out.formUnion(line.path(done.form).map(\.id))
+        }
+        return out
+    }
+
+    public func completedCount(form id: Int, find: (String) -> MateSpecies? = MateSpecies.find) -> Int {
+        collected.filter { done in find(done.species).map { $0.final(done.form).id == id } ?? false }.count
+    }
 
     public var tokens: Int { current?.tokens ?? 0 }
 

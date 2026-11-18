@@ -1,4 +1,6 @@
-"""사내 Deploy (배포 관리) REST API 조회. 사내 계정 Basic 인증."""
+"""사내 Deploy (배포 관리) REST API 조회와 배포 승인. 사내 계정 Basic 인증."""
+
+from urllib.parse import quote
 
 from .basic_client import BasicClient
 
@@ -31,6 +33,14 @@ class DeployClient(BasicClient):
 
     def approvals(self) -> list[dict]:
         return [_release(x) for x in self._get("/api/releases/approvals").json() or []]
+
+    def domain_name(self, domain_id) -> str:
+        return (self._get(f"/api/domains/{domain_id}").json() or {}).get("name") or ""
+
+    def approve(self, domain_name: str, release_id) -> None:
+        """배포 승인: 상태를 approved 로 바꾼다. 승인되면 시스템이 배치를 시작한다."""
+        self._patch(f"/api/domains/{quote(str(domain_name), safe='')}/releases/{release_id}",
+                    [{"op": "replace", "path": "/status", "value": "approved"}])
 
     def domain_releases(self, domain: str, status: str = "", limit: int = 20) -> list[dict]:
         data = self._get(f"/api/domains/{domain}/releases", params={"status": status, "offset": 0, "limit": limit}).json()

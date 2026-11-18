@@ -537,3 +537,46 @@ def test_event_notify_skips_duplicates(env, capsys):
     assert run("event", "--source", "jira", "--task", "pokemate-jira", "--key", "ACME-1", "--event", "detected") == 0
     posts = [c for c, _ in fake.calls if c[0] == "curl"]
     assert len(posts) == 3
+
+
+def test_deploy_approve(env, monkeypatch, capsys):
+    import httpx
+    from pokemate.credentials import Credential
+    from pokemate.deploy_client import DeployClient
+    _, _, tmp = env
+    conf = tmp / "shared" / "connections.local.json"
+    rows = json.loads(conf.read_text(encoding="utf-8"))
+    rows.append({"id": "deploy", "name": "Deploy", "group": "ad", "enabled": True, "baseUrl": "http://api.example.com", "webUrl": "http://web.example.com"})
+    conf.write_text(json.dumps(rows), encoding="utf-8")
+    sent = []
+
+    def handler(r):
+        if r.method == "PATCH":
+            sent.append((r.url.path, json.loads(r.content)))
+            return httpx.Response(403, json={"message": "no permission"}) if r.url.path.endswith("/4") else httpx.Response(204)
+        if r.url.path == "/api/releases/approvals":
+            return httpx.Response(200, json=[
+                {"id": 1, "domainId": 10, "summary": "남의 배포", "status": "open", "creatingUser": {"name": "kim"}},
+                {"id": 2, "domainId": 10, "summary": "내 배포", "status": "open", "creatingUser": {"name": "ME"}},
+                {"id": 3, "domainId": 10, "summary": "이미 승인", "status": "approved", "creatingUser": {"name": "kim"}},
+                {"id": 4, "domainId": 10, "summary": "거절될 배포", "status": "open", "creatingUser": {"name": "lee"}}])
+        return httpx.Response(200, json={"id": 10, "name": "sample-api"})
+
+    monkeypatch.setattr(automation.credentials, "load", lambda system: Credential("me", "p"))
+    monkeypatch.setattr(automation, "DeployClient", lambda base, cred: DeployClient(base, cred, httpx.MockTransport(handler)))
+
+    assert run("deploy-approve", "--dry-run") == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [r["id"] for r in out["approved"]] == [1, 4] and sent == []
+
+    assert run("deploy-approve") == 1
+    out = json.loads(capsys.readouterr().out)
+    patch = [{"op": "replace", "path": "/status", "value": "approved"}]
+    assert sent == [("/api/domains/sample-api/releases/1", patch), ("/api/domains/sample-api/releases/4", patch)]
+    assert out["approved"] == [{"id": 1, "summary": "남의 배포", "requester": "kim", "domain": "sample-api", "url": "http://web.example.com/sample-api/releases/1"}]
+    assert [(r["id"], r["reason"]) for r in out["skipped"]] == [(2, "내가 만든 배포"), (3, "승인 대기가 아님 (approved)")]
+    assert out["failed"][0]["id"] == 4 and "no permission" in out["failed"][0]["reason"]
+    assert [e["key"] for e in automation.read_events(automation.now()) if e.get("task") == "deploy-approve"] == ["1"]
+
+    assert run("deploy-approve", "--id", "99") == 1
+    assert json.loads(capsys.readouterr().out)["failed"] == [{"id": "99", "reason": "내가 승인할 배포 목록에 없음"}]
