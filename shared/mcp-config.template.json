@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pokemate": {
+      "command": "{{UV_PATH}}",
+      "args": ["--directory", "{{MCP_SERVER_DIR}}", "run", "pokemate", "serve"]
+    }
+  }
+}

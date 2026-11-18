@@ -1,0 +1,127 @@
+import Foundation
+import PokeMateCore
+
+/// 트리거 알림 확인기. 1분마다 깨어나서, 알림마다 정한 주기(기본 5분)가 지난 트리거의 이벤트를 조회해 새로 생긴 항목만 알린다.
+/// 내용(prompt)이 있으면 메이트가 그 일을 해서 결과를 카드로, 없으면 이벤트 자체를 카드로 보여 준다.
+@MainActor
+final class TriggerWatcher {
+    private let model: AppModel
+    private let notifier: Notifier
+    private let reminders: ReminderCenter
+    private var timer: Timer?
+    private var checking: Set<UUID> = []
+    /// 알림별 마지막 확인 시각 (앱을 다시 켜면 처음부터)
+    private var lastChecked: [UUID: Date] = [:]
+    private static var seenFile: URL { AppPaths.dataDir.appendingPathComponent("trigger-seen.json") }
+
+    init(model: AppModel, notifier: Notifier, reminders: ReminderCenter) {
+        self.model = model
+        self.notifier = notifier
+        self.reminders = reminders
+    }
+
+    func start() {
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.checkDue() }
+        }
+        Task { try? await Task.sleep(nanoseconds: 10_000_000_000); await checkDue() }
+    }
+
+    /// 주기가 된 트리거만 확인한다.
+    func checkDue() async {
+        let now = Date()
+        for alarm in model.alarms where alarm.enabled {
+            guard let trigger = alarm.trigger, trigger.isDue(lastChecked: lastChecked[alarm.id], now: now) else { continue }
+            let result = await check(alarm)
+            model.recordRun(alarm.id, result.message, failed: result.failed)
+        }
+    }
+
+    /// 한 알림 확인. [지금 실행] 에서도 부르고, 결과를 한 줄로 돌려준다 (알림 목록에 잠깐 보임).
+    @discardableResult
+    func check(_ alarm: Alarm) async -> (message: String, failed: Bool) {
+        guard let trigger = alarm.trigger, !checking.contains(alarm.id) else { return ("이미 확인 중이에요", false) }
+        checking.insert(alarm.id)
+        lastChecked[alarm.id] = Date()
+        defer { checking.remove(alarm.id) }
+        guard let items = try? await MateCLI.events(trigger.event, settings: model.settings) else {
+            return ("확인하지 못했어요. 연결 메뉴를 확인해 주세요", true)
+        }
+
+        var seenAll = Self.loadSeen()
+        let key = alarm.id.uuidString
+        let firstTime = seenAll[key] == nil
+        let fresh = TriggerDiff.newItems(current: items, seen: seenAll[key].map(Set.init))
+        seenAll[key] = Array(Set(seenAll[key] ?? []).union(items.map(\.key)))
+        Self.saveSeen(seenAll)
+
+        for item in fresh {
+            notify(alarm, item)
+        }
+        if firstTime { return ("처음이라 지금 있는 \(items.count)건을 기준으로 잡았어요", false) }
+        return fresh.isEmpty ? ("새로 생긴 것 없어요", false) : ("새로 \(fresh.count)건, 알림 창에 보냈어요", false)
+    }
+
+    private func notify(_ alarm: Alarm, _ item: EventItem) {
+        let prompt = (AlarmStore.resolvePrompt(alarm, settings: model.settings) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            if alarm.toMac { notifier.send(title: "🔔 \(item.title)", body: item.summary) }
+            if alarm.toPanel { reminders.add(title: item.title, text: item.summary, failed: false, url: item.url.isEmpty ? nil : item.url) }
+            return
+        }
+        let context = "다음 이벤트가 생겼다.\n- \(item.title)\n- \(item.summary)\n- 링크: \(item.url)\n\n요청: \(prompt)"
+        let finish: (ClaudeResponse, RunUsage?) -> Void = { [notifier, reminders, model] response, usage in
+            switch response {
+            case .success:
+                model.recordRun(alarm.id, "끝났어요", failed: false, usage: usage, count: false)
+            case .failure(let failure):
+                model.recordRun(alarm.id, failure.message, failed: true, usage: usage, count: false)
+            }
+            switch response {
+            case .success(let text, _):
+                if alarm.toMac { notifier.send(title: "🔔 \(item.title)", body: Reminder.summary(of: text)) }
+                if alarm.toPanel { reminders.add(title: item.title, text: text, failed: false, url: item.url.isEmpty ? nil : item.url) }
+            case .failure(let failure):
+                if alarm.toMac { notifier.send(title: "🔔 \(item.title)", body: item.summary) }
+                if alarm.toPanel { reminders.add(title: item.title, text: failure.message, failed: true, url: item.url.isEmpty ? nil : item.url) }
+            }
+        }
+        let title = "\(alarm.title) · \(item.title)"
+        let access = alarm.canWrite ? ClaudeCommand.loadWriteAccess() : ClaudeCommand.WriteAccess()
+        if alarm.rolePipeline {
+            WorkSessionCenter.shared.handlePipeline(alarm: alarm, item: item, prompt: prompt, title: title, chat: model.chat, completion: finish)
+        } else if alarm.workSessions && !access.tools.isEmpty {
+            WorkSessionCenter.shared.handle(alarm: alarm, item: item, prompt: prompt, title: title, access: access, chat: model.chat, completion: finish)
+        } else if alarm.canWrite && !access.tools.isEmpty {
+            model.chat.runAutomation(title: title, prompt: Self.withDefaultKnowledge(context), access: access, timeout: alarm.automationTimeout, completion: finish)
+        } else {
+            model.chat.runReport(title: title, prompt: Self.withDefaultKnowledge(context), completion: finish)
+        }
+    }
+
+    static func withDefaultKnowledge(_ text: String) -> String {
+        guard text.contains(DomainMap.placeholder) else { return text }
+        return text.replacingOccurrences(of: DomainMap.placeholder, with: DomainMap.load().knowledgeText(for: ""))
+    }
+
+    /// 예전 GitHub 리뷰 요청 감시가 기억하던 PR 을 새 트리거 알림의 기준으로 옮긴다 (다시 알리지 않게).
+    static func migrateGitHubSeen(to alarm: Alarm) {
+        let old = AppPaths.dataDir.appendingPathComponent("github-seen.json")
+        guard let data = try? Data(contentsOf: old), let ids = try? JSONDecoder().decode([Int].self, from: data) else { return }
+        var seen = loadSeen()
+        seen[alarm.id.uuidString] = ids.map(String.init)
+        saveSeen(seen)
+        try? FileManager.default.removeItem(at: old)
+    }
+
+    private static func loadSeen() -> [String: [String]] {
+        guard let data = try? Data(contentsOf: seenFile),
+              let seen = try? JSONDecoder().decode([String: [String]].self, from: data) else { return [:] }
+        return seen
+    }
+
+    private static func saveSeen(_ seen: [String: [String]]) {
+        try? FileManager.default.createDirectory(at: AppPaths.dataDir, withIntermediateDirectories: true)
+        try? JSONEncoder().encode(seen).write(to: seenFile, options: .atomic)
+    }
+}

@@ -1,0 +1,275 @@
+# PokeMate
+
+macOS 메뉴바에 사는 업무 메이트. Claude Code 토큰 사용량을 보여 주고, 토큰을 쓸수록 자라는 포켓몬을 키우며, 대화·알람·메모로 업무를 돕는다.
+
+```
+메뉴바 [포켓몬] 12.3M  →  [ 홈 | 알람 | 메모 | 컬렉션 ]   🔌 ⚙︎
+```
+
+| 탭 | 내용 |
+|---|---|
+| 홈 | 키우는 포켓몬과 진화 단계, 오늘·이번 주·이번 달 토큰과 추정 비용, 메이트와 대화 |
+| 알람 | 정한 시각에 할 일, 또는 이벤트(리뷰어 지정, 새 이슈 할당 등)가 생기면 할 일 |
+| 작업 | 레포별로 지식이 쌓이는 Claude 작업 세션. 기록 보기·말 걸기·새로 만들기·새 세션으로 바꾸기·보관 |
+| 메모 | md 파일 메모. 대화에서 "메모해줘" 로도 남긴다 |
+| 컬렉션 | 고른 범위(1세대·전체)의 포켓몬 도감. 10억 토큰까지 키운 포켓몬이 등록된다 |
+| 🔌 연결 · ⚙︎ 설정 | 사내 시스템 연결, 포켓몬 범위, 규칙·권한, 단축키, 호칭 (모델·추론 수준은 홈 입력창 아래에서 고른다) |
+
+## 구조
+
+```
+PokeMate 앱 (Swift, 메뉴바)  ──claude -p (stream-json)──▶  Claude Code  ──▶  Claude
+        │   ▲                                                      │
+        │   └── 권한 요청 (승인 카드에서 [허용/거부]) ◀─────────────┤  기본 도구: Bash · Read · Edit · Write · WebFetch …
+        │                                                          ├─▶ PokeMate MCP 서버 (Python) ──▶ Jira / Wiki / 근태 / 배포 / GitHub(gh) / 토큰 집계
+        │                                                          └─▶ claude.ai Microsoft 365 커넥터 ──▶ 메일·일정·Teams
+        └─▶ ~/.claude/projects/*.jsonl 을 읽어 토큰 집계 → usage.json
+```
+
+엔진은 로그인된 Claude Code CLI 다. 별도 API 키가 필요 없고 Claude Code 계정 사용량으로 동작한다. 앱 전용 Claude 로그인(`~/Library/Application Support/poke-mate/claude-config`)을 써서 터미널 Claude Code 로그인과 섞이지 않는다.
+
+| 폴더 | 내용 |
+|---|---|
+| `app-mac/` | 메뉴바 앱 (SwiftUI + AppKit). `PokeMate` 화면, `PokeMateCore` 화면과 무관한 로직, `PokeMateCoreChecks` 로직 검증 |
+| `mcp-server/` | Python 패키지 `pokemate`. MCP 서버(`pokemate serve`), 연결 관리(`pokemate connect`, `pokemate status`), 이벤트 조회(`pokemate events`) |
+| `shared/` | 앱과 서버가 같이 쓰는 설정: 연결 대상 목록, MCP 설정 템플릿, 프롬프트, 규칙 예시 |
+
+## Claude Code 도구와 권한
+
+⚙︎ 설정 → 규칙 칸의 **Claude Code 도구 쓰기**를 켜면 메이트 대화에서 Claude Code 기본 도구(Bash, Read, Edit, Write, Glob, Grep, WebSearch, WebFetch 등)를 쓴다. 기본값은 꺼짐이고, 끄면 조회 도구(MCP)만 쓴다.
+
+- 대화는 데이터 폴더의 `work/` 에서 실행하고 홈 폴더(`~`)도 볼 수 있다(`--add-dir ~`).
+- Claude Code 가 사람에게 물어볼 동작(명령 실행, 파일 수정·생성, 웹 가져오기 등)은 대화창에 승인 카드로 뜬다. 카드에는 도구, 명령 또는 파일 경로, 수정 내용 요약이 나온다.
+  - [허용] 이번 한 번만 · [거부] · [이 대화에서 항상 허용] Claude Code 가 제안한 규칙을 이 대화가 끝날 때까지 허용한다(새 대화를 시작하면 사라진다).
+  - 누르기 전에는 실행하지 않고, 10분 안에 답이 없으면 거부한다. 읽기 전용 동작은 Claude Code 기본 규칙대로 묻지 않는다.
+- 카드가 뜨면 맥 알림("{메이트 이름} 승인 요청", 본문은 "Bash: 명령" 한 줄)도 보낸다. 알림을 누르면 메이트 창이 열리고, 허용은 창의 카드에서만 한다. 5초 안에 연달아 뜬 카드는 알림 하나로 묶고, 카드에 답하거나 10분이 지나면 알림을 지운다.
+- 실행 중에는 "Bash 실행 중: ls ~/Downloads" 처럼 지금 하는 일을 한 줄로 보여 준다.
+- 권한 요청은 앱이 받아 답한다(`--permission-prompts host --permission-prompt-tool stdio`). 허용은 사용자 클릭으로만 한다.
+- 토큰 조회 도구(`usage_summary`)는 이 스위치와 상관없이 늘 켜져 있다. 앱이 1분마다 집계 결과를 `usage.json` 에 남기고 MCP 도구가 읽는다.
+
+### 권한 파일
+
+규칙은 `~/Library/Application Support/poke-mate/work/.claude/settings.json` 한 파일에 모은다. 설정의 [권한 파일 열기]로 연다. Claude Code 표준 형식이고 우선순위도 Claude Code 그대로다: **deny > ask > allow**, 어디에도 없으면 승인 카드.
+
+```json
+{
+  "permissions": {
+    "deny": ["Bash(sudo:*)", "Bash(rm -rf:*)"],
+    "ask": ["Bash(git push:*)"],
+    "allow": ["Bash(git status:*)"]
+  }
+}
+```
+
+처음 실행할 때 파일이 없으면 아래 deny 기본값으로 만든다. 이미 있으면 빠진 기본 deny 만 더하고, 사용자가 넣은 것은 그대로 둔다.
+
+- 명령: `sudo` `su` `doas` `defaults write` `defaults delete` `scutil` `networksetup` `systemsetup` `pmset` `spctl` `csrutil` `nvram` `launchctl` `dscl` `security` `tccutil` `diskutil` `fdesetup` `profiles` `softwareupdate` `kextload` `shutdown` `reboot` `halt` `osascript`
+- 파일 수정·생성 금지: 이 권한 파일(`work/.claude/**`), 앱 `settings.json`, `local/` 의 `write-tools.json`·`alarms.json`·`pipeline-tools.json`·`domains.json`
+
+deny 에 있는 것은 승인 카드 없이 거부한다. 고친 내용은 다음 질문부터 적용된다.
+
+홈 폴더를 볼 수 있어서 `ls ~/Downloads` 같은 읽기 전용 명령은 카드 없이 실행된다. 명령 실행을 늘 묻게 하려면 `ask` 에 `"Bash"` 를 넣는다.
+
+## 토큰 집계
+
+- `~/.claude/projects`, `~/.config/claude/projects`, 앱 전용 로그인 폴더의 대화 기록(jsonl)을 읽는다.
+- 같은 응답이 여러 파일에 들어 있어도 메시지 id 로 한 번만 센다.
+- 처음 한 번 전체를 읽고, 이후에는 파일에서 늘어난 부분만 읽는다(1분마다). 캐시는 `~/Library/Application Support/poke-mate/token-cache.json`.
+- 비용은 [Claude 공개 단가](https://platform.claude.com/docs/en/about-claude/pricing)로 환산한 추정치다. 구독료나 실제 청구액이 아니다. 단가표에 없는 모델은 비용에서 빼고 화면에 따로 알린다.
+
+## 포켓몬
+
+[PokéAPI](https://pokeapi.co)에서 받은 포켓몬을 키운다. 설정의 "포켓몬 범위"에서 1세대(도감 #1~#151, 기본)와 전체 세대 중에 고른다. 전체 세대의 마지막 번호는 PokéAPI 에서 받아 온다. 도감과 그림은 처음 쓸 때 받아 `~/Library/Application Support/poke-mate/pokemon/` 에 범위별로 저장하고, 저장소에는 그림을 넣지 않는다.
+
+- 범위를 바꿔도 키우는 포켓몬과 도감 등록 기록은 그대로다. 새 범위는 다음 알부터 쓰고, 키우는 포켓몬은 알이 나올 때 정한 진화 경로를 끝까지 따른다.
+
+```
+알 ──3천만 토큰──▶ 기본 ──3억──▶ 1진화 ──6억──▶ 2진화 ──10억──▶ 도감 등록 → 다음 알
+```
+
+- 진화 단계 표기는 포켓몬 카드 용어(기본 · 1진화 · 2진화)를 따른다. 진화가 한 번뿐이면 `기본 → 1진화`, 진화하지 않으면 `기본` 상태로 10억까지 간다.
+- 진화가 갈라지는 포켓몬(예: 이브이)은 알이 나올 때 최종 모습을 무작위로 정한다.
+- 처음 알은 도감 #1, 그다음부터는 희귀도별 확률로 고른다: 일반 70% · 고급 20% · 희귀 8% · 전설 2%. 희귀도는 포획률로 나눈다(전설·환상 = 전설, 45 이하 = 희귀, 190 이하 = 고급, 나머지 = 일반).
+- 메뉴바 아이콘과 홈 카드는 지금 키우는 포켓몬의 모습을 보여 준다. 대화 상대도 부화한 뒤에는 이 포켓몬 이름으로 자신을 부른다.
+- 앱을 처음 켠 뒤로 늘어난 토큰만 센다. 오래된 대화 기록이 지워져 합계가 줄어도 포켓몬은 뒤로 가지 않는다.
+- 넘친 토큰은 다음 알로 이어진다.
+- 상태는 `~/Library/Application Support/poke-mate/mates.json`.
+
+## 알람
+
+- **시각 알람**: 정한 시각(매일·평일·요일·한 번)에 "내용"을 메이트에게 시킨다. 내용이 비면 알림만.
+- **명령 실행**: 시각 알람의 "할 일"을 [명령 실행]으로 고르면 Claude 를 부르지 않고(토큰 0) 셸 명령만 실행한다. 로그인 셸(`zsh -lc`)로 홈 폴더에서 돌리고 5분이 지나면 멈춘다. 종료 코드 0 이면 성공이고, 출력 마지막 몇 줄을 실행 기록(`alarm-runs.json`)과 알림에 남긴다. 명령 알람은 알람 수정 화면에서 직접 입력해야만 만들어지고, 대화의 알람 제안으로는 만들 수 없다.
+- **트리거 알람**: 1·3·5·10·30·60분마다 이벤트를 조회한다. 조회는 MCP 서버가 직접 해서 토큰을 쓰지 않고, 새 항목이 생기고 "내용"이 있을 때만 Claude 를 실행한다. 처음 켤 때 있던 항목은 기준으로 잡고 알리지 않는다.
+- **내용을 파일로**: 내용에 `{{prompt:이름}}` 을 쓰면 `local/prompts/이름.md`(없으면 `shared/prompts/이름.md`)를 지시로 쓴다. 알람 수정 화면의 [프롬프트 불러오기]로 고를 수 있다. 다른 곳의 파일은 `{{file:경로}}` 로 쓴다.
+- **켜기·끄기**: 알람 수정 화면의 "사용" 스위치로 바꾼다. 꺼진 알람은 목록에서 흐리게 보인다.
+- **순서**: 알람 행을 끌어서 같은 그룹 안이나 다른 그룹으로 옮긴다. 그룹 머리줄에 놓으면 그 그룹 맨 끝에 들어간다. 오른쪽 클릭의 "위로 옮기기 / 아래로 옮기기"로도 바꿀 수 있다.
+- **실행 기록**: 맨 위 카드에 켜진 알람 수, 오늘 실행 횟수, 마지막 실행 결과를 보여 주고, 각 알람 아래에도 주기와 마지막 결과를 한 줄로 보여 준다. 기록은 `~/Library/Application Support/poke-mate/alarm-runs.json`. 새 건이 없던 확인은 실행 횟수에 세지 않는다.
+- **사람이 없는 실행**: 알람은 지켜보는 사람이 없어서 승인 카드를 쓰지 않는다. 그 밖의 권한 요청은 묻지 않고 거부한다(`--permission-prompts none`). 권한 파일의 deny 도 그대로 적용된다.
+- **쓰기 허용**: 기본은 조회 전용이다. 트리거 알람에서 [쓰기 허용]을 켜면 `local/write-tools.json` 에 적은 명령과 폴더만 추가로 쓸 수 있다.
+  ```json
+  {
+    "tools": ["Bash(python3 /path/to/helper.py:*)"],
+    "dirs": ["~/Workspace"]
+  }
+  ```
+  파일이 없거나 tools 가 비어 있으면 조회만 한다. `Edit(경로/**)`·`Write(경로/**)` 를 적으면 그 경로 안에서만 파일을 고친다. 읽기(Read·Grep·Glob)는 작업 폴더와 dirs 에 적은 폴더 안만 된다. 쓰기 알람은 대화와 따로 돌고, 알람 수정 화면의 "제한 시간"(기본 30분, 30·60·90·120분)까지 실행한다.
+- **Jira 자동 처리 (예시 프롬프트 흐름)**: 나에게 할당된 이슈가 생기면 Story 는 In Progress → 지식 모으기(레포 CLAUDE.md, 문서, 위키, 비슷한 티켓, git 기록) → 처리 계획 댓글 → `feature/` 브랜치 worktree 에서 개발 → 빌드·테스트 → 통과하면 커밋·push → In Review → 결과 댓글. Task 는 In Progress → 실행 절차 댓글(실행은 사람이). 근거가 없거나 해석이 갈리면 개발하지 않고 "확인 필요" 댓글로 묻고 기다리며, 그 아래에 답 댓글을 달면 트리거가 다시 잡아 이어서 처리한다. PR 생성·머지·main/dev push·force push 는 하지 않는다.
+
+## 작업 세션
+
+레포별로 하나씩 이어 쓰는 Claude 세션이다. 같은 레포의 다음 일은 이미 읽은 CLAUDE.md·문서·위키를 다시 읽지 않는다. 세 군데에서 생긴다.
+
+- **자동 처리**: 쓰기 허용 트리거 알람에서 "레포별 작업 세션 이어 쓰기"를 켜면, 자동 처리를 레포별 세션으로 묶는다(아래 1~3).
+- **채팅에서 보내기**: 홈 입력창 아래 [보낼 곳 ▾]에서 메이트(기본) 대신 작업 세션을 고르면, 그 대화의 메시지가 그 세션으로 간다. `--resume`, 작업 세션 권한 규칙(`write-tools.json` 의 tools 는 미리 허용, 그 밖은 승인 카드), 토큰 기록, 레포별 차례(자동 처리와 겹치면 기다림)는 자동 처리와 같다. 답은 홈 채팅에 레포 이름 라벨을 달고 보인다. 고른 보낼 곳은 그 대화에서 유지되고 새 대화를 시작하면 메이트로 돌아간다. 메이트는 레포 코드 수정·조사·티켓 처리처럼 한 레포 일이라고 보면 답 끝에 `pokemate-route-suggest` 블록을 붙이고, 앱이 "X 작업 세션으로 보낼까요? [보내기]"를 보여 준다. 누르면 같은 질문을 그 세션으로 다시 보내고 보낼 곳도 그 세션으로 바뀐다. 메이트 세션에는 "작업 세션 X 로 보냄: (요약)" 한 줄만 다음 메시지 앞에 붙여 남긴다.
+- **직접 만들기**: "작업" 탭이나 [보낼 곳 ▾]의 [+ 새 작업 세션]에서 `~/Workspace` 아래 git 레포를 고르면 빈 세션이 생긴다. 첫 메시지에 레포 지식 모으기(CLAUDE.md·README·빌드·테스트 방법·최근 git log) 지시가 붙는다.
+
+1. **레포 정하기**: 새 건이 오면 가벼운 새 실행으로 처리할 레포만 정한다(읽기만). 이미 그 세션이 처리한 이슈(예: 확인 필요 답변)나 레포 이름이 보이는 PR 은 바로 그 세션으로 간다. 레포가 없는 운영 건은 "운영" 세션 하나에 모인다.
+2. **이어 쓰기**: `claude -p --resume <세션 id>` 로 "이번 건: KEY" 와 처리 지시를 보낸다. 같은 세션에 두 건이 오면 차례로 처리한다.
+3. **문맥 알림**: 자동으로 세션을 바꾸지 않는다. 실행(자동 처리·말 걸기)이 끝나 문맥 %를 다시 계산했을 때 설정한 %(기본 70%, 50~90% 또는 끄기)를 처음 넘으면 미리 알림 창과 Mac 알림으로 한 번 알린다. 다시 내려가거나 새 세션으로 바뀌기 전에는 또 알리지 않는다(sessions.json 에 기록). 알림의 [새 세션으로 바꾸기](누르면 "작업" 탭이 열림)나 "작업" 탭 세션 줄의 ⋯ 메뉴에서 직접 바꾸면, 지금까지 익힌 레포 지식을 요약해 새 세션에 넘길지 고른다. 문맥이 가득 차면 Claude Code 가 스스로 대화를 줄인다(자동 compact). 앱은 그 사이 결과 줄만 기다리므로 멈추지 않고, 줄어든 뒤 문맥 %가 내려가면 알림 기록도 풀린다.
+4. **화면**: "작업" 탭 맨 위에 "작업 세션 N개 · 실행 중 K · 이번 달 토큰·비용"(이번 달 1일부터 각 세션 기록 파일의 토큰을 모은 값)을 보여 준다. 목록에서 레포별 마지막 사용·처리한 티켓 수·문맥 %(알림 기준 이상이면 주황)·누적 토큰·실행 중/대기를 보고, 세션을 누르면 아래에 그 세션의 기록(사용자 메시지·Claude 답·도구 호출)과 입력창이 열려 이어서 말을 건다(대화와 같은 승인 카드). ⋯ 메뉴에서 새 세션으로 바꾸거나 보관한다.
+5. **기록 위치**: `~/Library/Application Support/poke-mate/automation/sessions.json` (세션 id, 레포, 만든 시각, 마지막 사용, 처리한 키, 문맥 크기, 누적 토큰·비용). 세션 대화 기록은 PokeMate 전용 로그인 폴더(`claude-config/projects/`)에 생기므로 다른 Claude 앱의 세션 목록에는 나오지 않는다.
+
+메이트 대화에서 "NOVA-1234 어느 세션에서 처리했어?", "지금 자동 처리 뭐 하고 있어?" 처럼 물으면 조회 도구 `work_sessions` 로 답한다. 지금 실행 중·대기 중인 건은 앱이 `automation/sessions-live.json` 에 남긴다.
+
+### 역할별 처리 (Jira)
+
+트리거 알람에서 "레포별 작업 세션 이어 쓰기" 아래 "역할별 세션으로 나눠 처리"를 켜면, 레포 세션 하나가 다 하던 Jira 처리를 역할 세션 4개(PM·개발·테스터·리뷰어)가 나눠 맡는다.
+
+1. **도메인**: 레포 정하기 결과 레포를 `local/domains.json`(예: `{"acme": {"repos": ["acme-sample-service", "acme-sample-web"], "knowledge": ["acme-kb", "~/.claude/references/acme-wiki"]}, "default": {"knowledge": ["acme-kb"]}}`)으로 도메인에 묶는다. `knowledge` 는 지식 모으기 때 읽는 읽기 전용 지식 저장소(`~/Workspace` 아래 폴더 이름 또는 경로)로, 프롬프트의 `{{knowledge}}` 자리에 들어가고 역할 세션의 읽기 폴더에 더해진다. 도메인에 `knowledge` 가 없으면 `default` 를 쓴다(역할별 처리를 끈 `jira.md` 도 같은 값). 어느 도메인에도 없으면 레포 이름이 도메인이다. 역할 세션은 `sessions.json` 에 `{도메인}:{역할}` 키로 남고, 같은 도메인은 한 번에 티켓 하나씩 처리한다.
+2. **흐름 (Story)**: PM(확인·지식 모으기·계획 댓글·레포·브랜치·개발 지시서) → PokeMate(`create-branch`·`worktree-add`) → 개발(W 안에서 코드·테스트) → 테스터(`run-tests` 와 완료 조건 대조, 테스트를 쓰지 않음) → PM(통과 확인) → 리뷰어(W 의 변경을 `/code-review high` 로 리뷰하고 결함 기준으로 거름) → PokeMate(`commit-push`) → PM(In Review·결과 댓글·알림). Task(운영 건)는 PM 하나로 끝낸다. Jira 댓글은 PM 만 쓴다.
+3. **넘기기**: 역할끼리는 말을 못 하므로 각 역할은 답 끝에 `pokemate-next` 블록(`{"next": "tester|dev|pm|reviewer|push|stop", "note": "…"}`)을 붙이고, 앱이 읽어 다음 역할 세션을 `--resume` 으로 부른다. 앞 단계의 note·답 요약과 PM 개발 지시서가 다음 역할 프롬프트에 붙는다. 블록이 없거나 깨지거나 그 역할에 허용되지 않은 next 면 멈추고 blocked 알림을 보낸다.
+4. **되돌림 상한**: 테스터→개발 2번, 리뷰어→개발 2번. 넘으면 PM 이 확인 필요(또는 개발 중단) 댓글을 남기고 멈춘다. 확인 필요 답이 달리면 PM 부터 다시 시작한다(되돌림 0).
+5. **권한**: 역할마다 `--tools`·허용 명령을 따로 준다(`local/pipeline-tools.json`, 없으면 기본값으로 만든다). PM 은 Jira 읽기·쓰기·알림·git-read, 개발은 W 안 Edit/Write·run-tests·git-read, 테스터는 run-tests·git-read, 리뷰어는 `Skill(code-review)`·git-read. `commit-push`·`create-branch`·`worktree-add` 는 어떤 역할에도 주지 않고 앱이 직접 실행한다.
+6. **프롬프트**: `local/prompts/`(없으면 `shared/prompts/`)의 `jira-common`(공통 명령·규칙)과 `jira-pm`·`jira-dev`·`jira-tester`·`jira-reviewer`. `{{helper}}` 는 helper 명령으로 바뀐다.
+7. **진행 상태**: 티켓마다 `automation/pipelines/{KEY}.json`(지금 단계, 되돌림 횟수, 레포·브랜치·W, 역할별 비용, 지나온 단계)에 남겨 앱을 다시 켜도 이어 간다. "작업" 탭은 도메인마다 역할 4줄과 지금 단계(예: `ACME-101 · tester 2/2`)를 보여 준다.
+
+알람 실행(시각·트리거·작업 세션)마다 입력·출력·캐시 토큰과 추정 비용을 `alarm-runs.json` 에 남기고, 알람 행의 마지막 결과 옆에 보여 준다.
+
+## 자동 처리 helper
+
+알람(명령 실행·트리거 쓰기 허용)과 자동 처리 프롬프트가 부르는 작은 명령 모음이다. Claude 없이 실행된다.
+
+```bash
+uv --directory <저장소>/mcp-server run --quiet pokemate auto <하위명령> [옵션]
+```
+
+| 하위 명령 | 하는 일 |
+|---|---|
+| `event` | 활동 기록 한 줄 남기기, `--notify` 면 Teams 카드 전송 (`--dry-run` 은 카드만 출력) |
+| `github-check` | 새 리뷰 요청 PR 확인, 새로 생기면 Teams 카드 |
+| `summary` | 하루 요약 카드 (예약 작업·Jira·GitHub) |
+| `worklog-check` | 직전 근무일까지 이번 달 근무시간 기록이 모자란 날 확인, 있으면 Teams 카드 (`--hours`, `--today`, `--dry-run`) |
+| `poll` | Jira·GitHub 새 일감 확인 후 Claude 실행 (근무 시간에만, `--force`, `--only`, `--dry-run`) |
+| `git-read` | 작업 폴더 바로 아래 레포에서 읽기 전용 git 명령만 |
+| `create-branch` | `feature/...` 브랜치 만들고 push (이미 있으면 안 만듦, force 없음) |
+| `jira-get` · `jira-search` · `jira-comments` · `jira-links` | Jira 읽기 (이슈, JQL 검색, 댓글, 연결 이슈·원격 링크, JSON) |
+| `jira-comment` | 나에게 할당된 이슈에만 댓글. 첫 줄 `[자동 작성]`, 이슈당 최대 3건(확인 필요는 1건) |
+| `jira-transition` | 나에게 할당된 이슈 상태 바꾸기 (`--to start`/`done`, 실제 상태 이름은 설정 `transitions`) |
+| `worktree-add` | `feature/` 브랜치를 `작업 폴더/.jira-auto-worktrees/{KEY}` worktree 로 꺼냄 |
+| `run-tests` | worktree 에서 빌드·테스트 (설정 `testCommands` 또는 gradlew·mvnw·npm·pytest·swift·go 감지, 20분), 결과 JSON |
+| `commit-push` | worktree 의 `feature/` 브랜치에 커밋·push (메시지는 `feat:` 등 한 줄, Jira 키·Co-Authored-By 거절, force 없음) |
+| `gh-get` · `gh-diff` | GitHub 조회 |
+| `gh-review` | 리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절) |
+| `write-note` | 댓글·리뷰 본문 파일 쓰기 |
+| `jira-state` · `review-state` | 처리 결과 저장 (다시 처리하지 않게). `jira-state --waiting` 은 "확인 필요" 답을 기다리는 표시 |
+
+- 설정: `local/connections.json` 에 `"kind": "settings", "id": "automation"` 항목을 둔다. Jira 상태 이름(`transitions`: `start`·`done`), 레포별 테스트 명령(`testCommands`), GitHub 사용자(`githubUser`, 비우면 `gh api user`), 작업 폴더(`workDir`), 근무 캘린더 주소·이름, 공휴일 국가, 공수 기록용 반복 티켓 제목(`recurringTitles`). GitHub 호스트와 Jira 주소는 같은 파일의 `github`·`jira` 항목 `baseUrl` 에서 읽고, Jira 는 연결 메뉴에서 연결한 계정(키체인)으로 직접 부른다. 예시는 `connections.example.json`.
+- 데이터: `~/Library/Application Support/poke-mate/automation/` 아래 `state/`(처리 상태), `logs/`(Claude 실행 로그), `notes/`(본문 파일), `activity/`(월별 활동 기록 jsonl).
+- Teams 웹훅 주소: 데이터 폴더 `teams-webhook-url` (권한 600). 이 파일은 열거나 출력하지 않는다.
+
+## 준비물
+
+- macOS 15 이상, Xcode Command Line Tools (`xcode-select --install`)
+- [Claude Code](https://code.claude.com) CLI
+- [uv](https://docs.astral.sh/uv/) (`brew install uv`)
+- (선택) [GitHub CLI](https://cli.github.com) `gh` — GitHub 이벤트용
+- (선택) claude.ai → 설정 → 커넥터에서 Microsoft 365 연결
+
+## 설치
+
+```bash
+git clone https://github.com/zlagusdbs/poke-mate-ai-agent.git ~/Workspace/poke-mate-ai-agent
+cd ~/Workspace/poke-mate-ai-agent
+
+# 1. 이 PC 의 설정 폴더 local/ (Git 에 올라가지 않는다. 다른 PC 에서 쓰던 local/ 이 있으면 그것을 복사)
+cp -R local.example local
+#    → local/connections.json 의 baseUrl 을 실제 주소로 바꾼다
+
+# 2. MCP 서버
+cd mcp-server && uv sync && uv run pytest && cd ..
+
+# 3. 앱 빌드와 실행
+./app-mac/scripts/bundle.sh
+open app-mac/build/PokeMate.app
+```
+
+### 설정은 어디에
+
+설정은 레포 한 곳(`~/Workspace/poke-mate-ai-agent`)에서 찾는다. 세 층을 아래부터 차례로 덮어쓴다(같은 이름이면 위 층이 이김).
+
+| 층 | 위치 | 내용 | Git |
+|---|---|---|---|
+| 기본 | `~/.claude/skills`, `~/.claude/rules` | 회사·개인 지식(Claude Code 와 같이 씀) | 레포 밖 |
+| 일반 | `shared/CLAUDE.md`, `shared/skills/`, `shared/rules/`, `shared/prompts/` | 회사 값 없는 일반 지시·알람 프롬프트 뼈대. 앱이 직접 읽는다 | 올라감 |
+| 회사·개인 | `local/` (CLAUDE.md, skills/, rules/, prompts/, alarms.json, alarm-groups.json, write-tools.json, pipeline-tools.json, domains.json, connections.json, bundle.json, banned-terms.txt) | 이 PC 의 회사 값과 알람 | 안 올라감 |
+| 실행 기록 | `~/Library/Application Support/poke-mate/` | settings.json(레포 위치 등), 대화·세션·로그·캐시·로그인·웹훅 주소 | 레포 밖 |
+
+- `shared/app/` 은 앱 자체의 시스템 안내(`system.md`, `daily-report.md`)라 설정 목록에 보이지 않는다.
+- `local/` 이 없거나 ⚙︎ 설정의 "메이트 저장소"가 틀리면 알람·규칙을 읽기만 하고 저장하지 않는다(빈 알람으로 덮어쓰지 않게). 설정 화면에 경고와 [예시(local.example)로 local 만들기]가 뜬다.
+- 다른 PC 로 옮길 때: `git clone` 으로 일반 설정을 받고, `local/` 폴더만 따로 복사한다.
+- `local/` 은 Git 이 무시하는 폴더라 `git clean -x`·`git clean -X` 를 쓰면 통째로 지워진다. 이 레포에서는 쓰지 않는다. `git stash -u`, `git checkout` 은 무시된 파일을 건드리지 않는다.
+- 저장소에 올라가는 코드·테스트·예시에는 일반 이름(hr, deploy, approval, permit, portal, groupware)과 example 값만 둔다. 회사 고유 값은 `local/` 에만 둔다.
+
+- `local/connections.json`: 실제 주소와 화면·대화에서 부르는 이름. 항목마다 `name`(연결 화면과 알람에 보이는 이름)과 `aliases`(대화에서 부르는 다른 이름)를 둘 수 있고, 앱이 시스템 안내에 "이 이름으로 부르면 이 연결의 도구를 쓴다"를 덧붙인다. `home` 은 로그인 확인에 여는 첫 화면 경로(permit), 설정 항목의 `worklogCalendarTitle`·`worklogAliases` 는 worklog 캘린더를 부르는 이름이다.
+- `local/bundle.json`: `{"bundleId": "…"}` 가 있으면 `bundle.sh` 가 그 번들 ID 로 묶는다(없으면 `Info.plist` 의 `io.pokemate.app`). 이미 쓰던 번들 ID 를 그대로 두면 알림 권한·메뉴바 위치가 유지된다.
+- `local/banned-terms.txt`: push 전에 막을 금지어 한 줄에 하나. `.git/hooks/pre-push` 가 push 되는 커밋의 파일 내용·파일 이름·커밋 메시지를 검사해 하나라도 있으면 파일과 줄 번호를 보여 주고 멈춘다. 지금 올릴 상태를 미리 보려면 `git add -A && .git/hooks/pre-push --check --index`.
+
+저장소를 `~/Workspace/poke-mate-ai-agent` 가 아닌 곳에 두었다면 ⚙︎ 설정의 "메이트 저장소"를 바꾼다.
+
+터미널에서 `uv --directory …` 없이 `pokemate` 로 바로 부르려면 한 번 설치한다. 저장소 코드를 고치면 바로 반영된다(`--editable`).
+
+```bash
+uv tool install --editable ./mcp-server
+```
+
+```bash
+pokemate --help
+```
+
+```bash
+pokemate auto --help
+```
+
+설치하지 않았다면 `uv --directory <저장소>/mcp-server run pokemate …` 로 부른다. 지우려면 `uv tool uninstall pokemate`.
+
+## 규칙과 기억
+
+레포의 `shared/`(일반)와 `local/`(이 PC)에서 md 로 관리한다. 두 곳의 구조는 같고, 같은 이름 파일은 `local/` 이 이긴다. CLAUDE.md 는 shared 다음 local 순서로 둘 다 읽는다. 설정 화면에서 새 파일을 만들 때 local(기본)과 shared 중에 고르고, shared 파일을 열면 Git 에 올라가는 파일이라고 알려 준다.
+
+```
+shared/ 또는 local/
+ ├ CLAUDE.md        늘 적용하는 기본 지시
+ ├ rules/           질문마다 모두 읽음 (memory.md = 기억)
+ ├ skills/          주제가 나올 때만 읽음 (머리말의 keywords 로 고름)
+ └ prompts/         알람 내용에서 {{prompt:이름}} 으로 불러 씀 (대화에서는 읽지 않음)
+```
+
+## 개발
+
+```bash
+cd mcp-server && uv run pytest                     # Python 테스트
+cd app-mac && swift run PokeMateCoreChecks       # Swift 로직 검증 (XCTest 대신 실행형)
+cd app-mac && ./scripts/bundle.sh                  # 앱 묶기
+cd app-mac && ./scripts/pipeline-trial.sh /tmp/pm-trial   # Jira 역할 처리 시험 (가짜 Jira·로컬 원격, 실제 Claude 실행)
+```
+
+연결 계정은 macOS 키체인(서비스 이름 `poke-mate`)에 저장한다.
+
+## 참고한 프로젝트
+
+PokeMate 는 [PokeTokenBar](https://github.com/chattymin/PokeTokenBar) (chattymin, MIT 라이선스)에서 아이디어를 얻었다.
+
+- 메뉴바에 Claude Code 토큰 사용량을 보여 주고, 토큰을 쓸수록 포켓몬이 알에서 깨어나 진화하는 구성
+- Claude 모델별 단가표 (`app-mac/Sources/PokeMateCore/TokenUsage.swift` 의 `ClaudePricing`)
+
+라이선스 전문은 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 에 있다.

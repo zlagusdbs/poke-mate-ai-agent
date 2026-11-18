@@ -1,0 +1,13 @@
+[
+  {"id": "portal", "name": "Portal", "group": "ad", "enabled": true, "baseUrl": "https://portal.example.com", "company": "Company A"},
+  {"id": "jira", "name": "Jira", "group": "ad", "enabled": true, "baseUrl": "https://jira.example.com", "company": "Company A"},
+  {"id": "wiki", "name": "Wiki", "group": "ad", "enabled": true, "baseUrl": "https://wiki.example.com", "company": "Company A"},
+  {"id": "hr", "name": "HR", "aliases": ["근태 시스템"], "group": "ad", "enabled": true, "baseUrl": "https://hr.example.com", "company": "Company A"},
+  {"id": "deploy", "name": "Deploy", "group": "ad", "enabled": true, "baseUrl": "http://deploy-api.example.com", "webUrl": "http://deploy.example.com", "company": "Company A"},
+  {"id": "approval", "name": "Approval", "group": "ad", "enabled": true, "baseUrl": "https://approval.example.com", "company": "Company A", "loginDomain": "EXAMPLE"},
+  {"id": "permit", "name": "Permit", "group": "ad", "enabled": true, "baseUrl": "https://permit.example.com", "home": "/Permit/Home", "company": "Company A"},
+  {"id": "github", "name": "GitHub", "group": "github", "enabled": true, "baseUrl": "https://github.example.com", "auth": "gh", "company": "Company A"},
+  {"id": "microsoft365", "name": "Microsoft 365", "group": "claude", "enabled": true, "baseUrl": null, "auth": "claude.ai", "company": "Company A"},
+  {"id": "groupware", "name": "Groupware", "group": "groupware", "enabled": false, "baseUrl": null, "company": "Company B"},
+  {"kind": "settings", "id": "automation", "githubUser": "", "workDir": "~/Workspace", "worklogCalendarUrl": "https://calendar.example.com/calendar", "worklogCalendarTitle": "근무 캘린더", "worklogAliases": [], "holidayCountry": "KR", "recurringTitles": ["회의", "휴가"], "transitions": {"start": "In Progress", "done": "In Review"}, "testCommands": {"example-service": "./gradlew test"}}
+]

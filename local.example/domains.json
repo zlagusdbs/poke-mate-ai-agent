@@ -1,0 +1,9 @@
+{
+  "acme": {
+    "repos": ["acme-sample-service", "acme-sample-web"],
+    "knowledge": ["acme-kb", "~/.claude/references/acme-wiki"]
+  },
+  "default": {
+    "knowledge": ["acme-kb"]
+  }
+}
