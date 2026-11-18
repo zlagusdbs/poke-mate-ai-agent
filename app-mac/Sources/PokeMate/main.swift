@@ -187,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusIcon(_ state: MateState) {
         guard let button = statusItem.button else { return }
         if let current = state.current, let species = UsageStore.shared.species(current.species),
-           let icon = PokemonSprites.shared.menuBarIcon(species: species, tokens: current.tokens, final: current.form) {
+           let icon = PokemonSprites.shared.menuBarIcon(species: species, tokens: current.tokens, final: current.form, shown: current.shown) {
             button.image = icon
         } else {
             button.image = PokemonSprites.emptyEggIcon()

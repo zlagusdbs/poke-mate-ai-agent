@@ -236,6 +236,29 @@ do {
     check(ev == [.hatched(first), .evolved(first, 2), .evolved(first, 3), .completed(first), .started(next), .hatched(next)]
           && MateSpecies.find(next) != nil, "mate: 한 번에 넘어도 부화·진화 차례로·등록·다음 알 순서 (단계 안 건너뜀)")
     check(jump.tokens == 130_000_000 && jump.collected.first?.days == 3 && jump.lastForm(of: first) == 3, "mate: 넘친 토큰은 다음 알로, 함께한 날 수, 진화 모습 기록")
+    check(jump.seenDex() == [1, 2, 3, MateSpecies.find(next)!.base.id], "dex: 등록한 친구는 지나온 단계 모두, 키우는 친구는 지금 단계까지 만남")
+    var raising = MateState(current: CurrentMate(species: first, tokens: 400_000_000, startedAt: t0, form: 3),
+                            party: [CurrentMate(species: first, tokens: 10_000_000, startedAt: t0, form: 4)])
+    check(raising.seenDex() == [1, 2], "dex: 1진화 중이면 기본형·중간형만, 알은 아직 안 만남")
+    raising.collected = [CollectedMate(species: first, completedAt: t0, days: 1, form: 4)]
+    check(raising.seenDex() == [1, 2, 4] && raising.completedCount(form: 4) == 1 && raising.completedCount(form: 3) == 0,
+          "dex: 갈래 진화로 등록하면 그 갈래 최종형이 만남·등록 횟수")
+    let line1 = MateSpecies.find(first)!
+    var pick = MateState(current: CurrentMate(species: first, tokens: 400_000_000, startedAt: t0, form: 3))
+    check(pick.show(first, form: 1) && pick.current?.shown == 1 && line1.shownForm(tokens: 400_000_000, final: 3, shown: 1)?.name == "기본1"
+          && pick.tokens == 400_000_000, "dex: 지나온 단계를 대표 모습으로 (성장은 그대로)")
+    check(!pick.show(first, form: 3) && pick.current?.shown == 1, "dex: 아직 안 된 단계는 고를 수 없음")
+    check(line1.shownForm(tokens: 700_000_000, final: 3, shown: 1)?.name == "기본1" && line1.shownForm(tokens: 700_000_000, final: 3, shown: nil)?.name == "최종1",
+          "dex: 진화해도 고른 모습 유지, 안 고르면 지금 모습")
+    check(pick.show(first, form: 2) && pick.current?.shown == nil, "dex: 지금 단계를 고르면 원래 모습으로")
+    var partyPick = MateState(current: CurrentMate(species: "x", tokens: 0, startedAt: t0),
+                              party: [CurrentMate(species: first, tokens: 400_000_000, startedAt: t0, form: 3)])
+    check(partyPick.show(first, form: 1) && partyPick.current?.species == first && partyPick.current?.shown == 1 && partyPick.party.first?.species == "x",
+          "dex: 파티 포켓몬의 지나온 단계를 고르면 그 계열이 대표가 되고 모습만 바뀜")
+    let dexEntries = MateDex.entries(MateSpecies.all, maxDex: 151)
+    check(dexEntries.count == 25 && dexEntries.first?.form.id == 1 && dexEntries.first?.species.id == first
+          && Set(dexEntries.map(\.id)).count == dexEntries.count, "dex: 도감 칸은 포켓몬 한 마리마다 (계열 6개·4마리씩 + 전설 1)")
+    check(MateDex.entries(MateSpecies.all, maxDex: 40).count == 16, "dex: 범위 밖 번호는 칸에서 뺌")
     let sp = MateSpecies.find(first)!
     check(sp.form(tokens: 400_000_000, final: 4)?.name == "갈래1" && sp.form(tokens: 700_000_000, final: 4)?.name == "갈래1"
           && sp.form(tokens: 400_000_000, final: 3)?.name == "중간1", "mate: 2단계 갈래는 3억에 최종, 3단계는 중간을 거침")

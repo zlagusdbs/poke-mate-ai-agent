@@ -38,6 +38,7 @@ struct MateSprite: View {
     let species: MateSpecies
     let tokens: Int
     var final: Int?
+    var shown: Int?
     var size: CGFloat = 64
     var animated = true
 
@@ -49,7 +50,7 @@ struct MateSprite: View {
     }
 
     @ViewBuilder private var sprite: some View {
-        if let form = species.form(tokens: tokens, final: final) {
+        if let form = species.shownForm(tokens: tokens, final: final, shown: shown) {
             PokemonImage(id: form.id, size: size)
         } else {
             PixelSprite(grid: MateSpecies.eggGrid, palette: species.eggPalette(), size: size)
@@ -66,9 +67,10 @@ struct MateCard: View {
             let tokens = state.tokens
             let count = species.path(current.form).count
             let step = MateRules.step(for: tokens, count: count)
-            let form = species.form(tokens: tokens, final: current.form)
+            let form = species.shownForm(tokens: tokens, final: current.form, shown: current.shown)
+            let live = species.form(tokens: tokens, final: current.form)
             HStack(alignment: .center, spacing: 12) {
-                MateSprite(species: species, tokens: tokens, final: current.form, size: 72)
+                MateSprite(species: species, tokens: tokens, final: current.form, shown: current.shown, size: 72)
                     .frame(width: 84, height: 84)
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 VStack(alignment: .leading, spacing: 4) {
@@ -80,6 +82,9 @@ struct MateCard: View {
                         Text(MateRules.label(step: step)).font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    }
+                    if let live, let form, live.id != form.id {
+                        Text("키우는 모습: \(live.name) · 컬렉션에서 고른 모습으로 보여요").font(.caption2).foregroundStyle(.secondary)
                     }
                     ProgressView(value: MateRules.stageProgress(for: tokens, count: count)).tint(.orange)
                     Text("\(MateRules.goalLabel(for: tokens, count: count))까지 \(TokenFormat.compact(max(0, MateRules.nextGoal(for: tokens, count: count) - tokens)))")
@@ -140,7 +145,10 @@ struct CollectionView: View {
 
     var body: some View {
         let state = usage.mate
-        let shown = filtered(state)
+        let seen = state.seenDex()
+        let all = entries(state, seen: seen)
+        let shown = filtered(all, state: state, seen: seen)
+        let inRange = Set(MateDex.entries(usage.allSpecies, maxDex: usage.range.fixedMaxDex).map(\.id))
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
@@ -163,17 +171,17 @@ struct CollectionView: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("도감").font(.headline)
-                Text("\(met(state).filter { MateSpecies.inPool($0.id) != nil }.count) / \(usage.allSpecies.count)종 · \(usage.range.label)").font(.caption).foregroundStyle(.secondary)
+                Text("\(seen.intersection(inRange).count) / \(inRange.count)마리 · \(usage.range.label)").font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 6) {
                 ForEach(MateRarity.allCases, id: \.self) { rarity in
-                    chip(rarity, count: met(state).filter { $0.rarity == rarity }.count)
+                    chip(rarity, count: all.filter { seen.contains($0.id) && $0.species.rarity == rarity }.count)
                 }
             }
             ScrollView {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                    ForEach(shown) { species in
-                        cell(species, state: state)
+                    ForEach(shown) { entry in
+                        cell(entry, state: state, seen: seen)
                     }
                 }
                 if shown.isEmpty {
@@ -185,21 +193,30 @@ struct CollectionView: View {
         .padding(.horizontal, Theme.gutter)
     }
 
-    private func met(_ state: MateState) -> [MateSpecies] {
-        usage.knownSpecies.filter { state.count(of: $0.id) > 0 || state.raising($0.id) != nil }
+    private func eggEntries(_ state: MateState) -> [DexEntry] {
+        ([state.current].compactMap { $0 } + state.party).compactMap { mate in
+            guard let line = MateSpecies.find(mate.species), line.form(tokens: mate.tokens, final: mate.form) == nil else { return nil }
+            return DexEntry(form: line.base, species: line)
+        }
     }
 
-    private func filtered(_ state: MateState) -> [MateSpecies] {
+    private func entries(_ state: MateState, seen: Set<Int>) -> [DexEntry] {
+        var list = MateDex.entries(usage.knownSpecies, maxDex: nil).filter { seen.contains($0.id) }
+        for egg in eggEntries(state) where !list.contains(where: { $0.id == egg.id }) { list.append(egg) }
+        return list
+    }
+
+    private func filtered(_ list: [DexEntry], state: MateState, seen: Set<Int>) -> [DexEntry] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: "#", with: "")
-        var list = met(state).filter { rarityFilter.isEmpty || rarityFilter.contains($0.rarity) }
+        var out = list.filter { rarityFilter.isEmpty || rarityFilter.contains($0.species.rarity) }
         if !q.isEmpty {
-            list = list.filter { String($0.number) == q || $0.names().contains { $0.lowercased().contains(q) } }
+            out = out.filter { String($0.form.id) == q || (seen.contains($0.id) && $0.form.name.lowercased().contains(q)) }
         }
         switch sort {
-        case .number: return list.sorted { $0.number < $1.number }
-        case .name: return list.sorted { $0.name < $1.name }
-        case .rarity: return list.sorted { ($0.rarity.rawValue, $0.number) < ($1.rarity.rawValue, $1.number) }
-        case .count: return list.sorted { (state.count(of: $1.id), $0.number) < (state.count(of: $0.id), $1.number) }
+        case .number: return out.sorted { $0.form.id < $1.form.id }
+        case .name: return out.sorted { $0.form.name < $1.form.name }
+        case .rarity: return out.sorted { ($0.species.rarity.rawValue, $0.form.id) < ($1.species.rarity.rawValue, $1.form.id) }
+        case .count: return out.sorted { (state.completedCount(form: $1.id), $0.form.id) < (state.completedCount(form: $0.id), $1.form.id) }
         }
     }
 
@@ -223,29 +240,36 @@ struct CollectionView: View {
         .help(on ? "\(rarity.label) 필터 끄기" : "\(rarity.label)만 보기")
     }
 
-    private func cell(_ species: MateSpecies, state: MateState) -> some View {
-        let count = state.count(of: species.id)
+    private func cell(_ entry: DexEntry, state: MateState, seen: Set<Int>) -> some View {
+        let species = entry.species
         let raising = state.raising(species.id)
-        let isCurrent = state.current?.species == species.id
-        let known = count > 0 || raising != nil
-        let final = raising?.form ?? state.lastForm(of: species.id)
         let tokens = raising?.tokens ?? MateRules.completeAt
-        let form = species.form(tokens: tokens, final: final)
+        let live = raising.flatMap { species.form(tokens: tokens, final: $0.form) }
+        let shown = raising.flatMap { species.shownForm(tokens: tokens, final: $0.form, shown: $0.shown) }
+        let isEgg = raising != nil && live == nil && entry.id == species.base.id
+        let isNow = raising != nil && (shown?.id == entry.id || isEgg)
+        let isLive = raising != nil && live?.id == entry.id
+        let isCurrent = isNow && state.current?.species == species.id
+        let pickable = raising != nil && !isCurrent && !isEgg && raising.flatMap { mate in
+            species.step(tokens: tokens, final: mate.form).map { step in species.path(mate.form).prefix(step + 1).contains { $0.id == entry.id } }
+        } == true
+        let known = seen.contains(entry.id)
+        let count = state.completedCount(form: entry.id)
         return VStack(spacing: 4) {
             HStack(spacing: 3) {
-                Text("#\(species.number)").font(.caption.weight(.bold)).foregroundStyle(known ? species.rarity.color : .secondary)
+                Text("#\(entry.id)").font(.caption.weight(.bold)).foregroundStyle(known || isEgg ? species.rarity.color : .secondary)
                 if isCurrent { Image(systemName: "star.fill").font(.caption2).foregroundStyle(Color.accentColor) }
                 Spacer()
-                if count > 1 { Text("×\(count)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary) }
+                if count > 0 { Text("×\(count)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary).help("도감 등록 \(count)번") }
             }
             ZStack(alignment: .bottom) {
-                if raising != nil {
-                    MateSprite(species: species, tokens: tokens, final: final, size: 48, animated: isCurrent)
+                if isNow, let raising {
+                    MateSprite(species: species, tokens: tokens, final: raising.form, shown: raising.shown, size: 48, animated: isCurrent)
                 } else {
-                    PokemonImage(id: species.final(final).id, size: 48, silhouette: !known)
+                    PokemonImage(id: entry.id, size: 48, silhouette: !known)
                 }
-                if raising != nil {
-                    Text(isCurrent ? "대표" : MateRules.label(step: species.step(tokens: tokens, final: final)))
+                if isNow || isLive {
+                    Text(isCurrent ? "대표" : MateRules.label(step: species.step(tokens: tokens, final: raising?.form)))
                         .font(.caption2.weight(.bold)).foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
                         .padding(.horizontal, 5).padding(.vertical, 1)
                         .background((isCurrent ? Color.accentColor : Color.secondary).opacity(0.15), in: Capsule())
@@ -253,7 +277,7 @@ struct CollectionView: View {
                 }
             }
             .frame(height: 56)
-            Text(known && !(raising != nil && form == nil) ? (form ?? species.final(final)).name : "???")
+            Text(known ? entry.form.name : "???")
                 .font(.callout).lineLimit(1)
                 .foregroundStyle(known ? Color.primary : Color.secondary)
                 .padding(.top, 4)
@@ -266,13 +290,15 @@ struct CollectionView: View {
         .contextMenu {
             if isCurrent {
                 Text("지금 대표예요")
+            } else if pickable {
+                Button("대표로 지정") { usage.makeRepresentative(species.id, form: entry.id) }
             } else if raising != nil {
-                Button("대표로 지정") { usage.makeRepresentative(species.id) }
+                Text("아직 진화하지 않은 단계예요")
             } else {
                 Text("도감 등록이 끝난 포켓몬은 대표로 지정할 수 없어요")
             }
         }
-        .help(known ? "\(species.rarity.label) · \((form ?? species.final(final)).flavor)\(raising != nil && !isCurrent ? " · 우클릭해서 대표로 지정" : "")"
-                    : "\(species.rarity.label) · 아직 못 만난 친구")
+        .help(known ? "\(species.rarity.label) · \(entry.form.flavor)\(pickable ? " · 우클릭해서 대표로 지정" : "")"
+                    : isEgg ? "\(species.rarity.label) · 아직 알이에요" : "\(species.rarity.label) · 아직 못 만난 친구")
     }
 }

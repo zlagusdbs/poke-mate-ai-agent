@@ -203,7 +203,7 @@ final class UsageStore: ObservableObject {
 
     var pokemonName: String? {
         guard let current = mate.current, let sp = species(current.species) else { return nil }
-        return sp.form(tokens: current.tokens, final: current.form)?.name
+        return sp.shownForm(tokens: current.tokens, final: current.form, shown: current.shown)?.name
     }
 
     func mateName(_ settings: AppSettings) -> String {
@@ -212,9 +212,10 @@ final class UsageStore: ObservableObject {
         return name.isEmpty ? AppSettings.defaultAssistantName : name
     }
 
-    func makeRepresentative(_ id: String) {
+    func makeRepresentative(_ id: String, form: Int? = nil) {
         var state = mate
-        guard state.makeRepresentative(id) else { return }
+        let changed = form.map { state.show(id, form: $0) } ?? state.makeRepresentative(id)
+        guard changed else { return }
         mate = state
         mateMessage = nil
         MateStore.save(state, to: mateFile)
