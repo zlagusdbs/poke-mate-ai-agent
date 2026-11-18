@@ -12,6 +12,7 @@ final class WorkSessionCenter: ObservableObject {
         didSet { writeLive() }
     }
     @Published private(set) var pipelines: [String: PipelineState] = [:]
+    @Published private(set) var reviewing: [String: String] = [:]
 
     init() {
         writeLive()
@@ -180,10 +181,11 @@ final class WorkSessionCenter: ObservableObject {
     }
 
     private func runOnce(chat: ChatSession, title: String, prompt: String, access: ClaudeCommand.WriteAccess, timeout: TimeInterval,
-                         sessionId: String?, newSessionId: String? = nil, quiet: Bool) async -> (ClaudeResponse, RunUsage?) {
+                         sessionId: String?, newSessionId: String? = nil, quiet: Bool,
+                         extraEnvironment: [String: String] = [:]) async -> (ClaudeResponse, RunUsage?) {
         await withCheckedContinuation { continuation in
             chat.runAutomation(title: title, prompt: prompt, access: access, timeout: timeout, sessionId: sessionId,
-                               newSessionId: newSessionId, quiet: quiet) { response, usage in
+                               newSessionId: newSessionId, quiet: quiet, extraEnvironment: extraEnvironment) { response, usage in
                 continuation.resume(returning: (response, usage))
             }
         }
@@ -445,5 +447,87 @@ extension WorkSessionCenter {
               let diff = try? await runner.run(executable: "/usr/bin/git", arguments: ["-C", worktree, "diff", "HEAD"], timeout: 120),
               diff.exitCode == 0 else { return nil }
         return String(decoding: diff.stdout, as: UTF8.self)
+    }
+}
+
+extension WorkSessionCenter {
+    func handleReview(alarm: Alarm, item: EventItem, prompt: String, title: String, access: ClaudeCommand.WriteAccess,
+                      chat: ChatSession, completion: @escaping (ClaudeResponse, RunUsage?) -> Void) {
+        guard let target = ReviewTarget.parse(url: item.url) else {
+            handle(alarm: alarm, item: item, prompt: prompt, title: title, access: access, chat: chat, completion: completion)
+            return
+        }
+        let context = "\(Self.pipelineEvent(item))\n\n요청: \(prompt)"
+        let map = DomainMap.load()
+        if let hit = DomainReview.known(target, map: map, book: ReviewDomainBook.load()) {
+            enqueueReview(target, domain: hit.domain, why: hit.why, source: hit.source, context: context, alarm: alarm, title: title,
+                          access: access, chat: chat, completion: completion)
+            return
+        }
+        let helper = PipelineAccess.helper(settings: AppPaths.loadSettings())
+        let readOnly = ClaudeCommand.WriteAccess(tools: ["Bash(\(helper) gh-get:*)", "Bash(\(helper) jira-get:*)"], dirs: [])
+        running[Self.routingSlot] = target.label
+        chat.runAutomation(title: "\(title) · 도메인 정하기", prompt: DomainReview.choosePrompt(target: target, map: map, helper: helper),
+                           access: readOnly, timeout: 600, quiet: true) { [weak self] response, _ in
+            guard let self else { return }
+            self.running[Self.routingSlot] = nil
+            var domain = DomainReview.fallback
+            var why = "도메인을 정하지 못해 \(DomainReview.fallback) 로 리뷰"
+            if case .success(let text, _) = response, let choice = DomainReview.extract(from: text, map: map) {
+                domain = choice.domain
+                why = choice.why
+                var book = ReviewDomainBook.load()
+                book.repos[target.fullName] = ReviewDomainChoice(domain: choice.domain, why: choice.why, at: Date())
+                book.save()
+            }
+            self.enqueueReview(target, domain: domain, why: why, source: .chosen, context: context, alarm: alarm, title: title,
+                               access: access, chat: chat, completion: completion)
+        }
+    }
+
+    private func enqueueReview(_ target: ReviewTarget, domain: String, why: String, source: DomainReview.Source, context: String,
+                               alarm: Alarm, title: String, access: ClaudeCommand.WriteAccess, chat: ChatSession,
+                               completion: @escaping (ClaudeResponse, RunUsage?) -> Void) {
+        queued[domain, default: []].append("리뷰 \(target.label)")
+        _ = queue.run(domain) { [weak self] in
+            await self?.processReview(target, domain: domain, why: why, source: source, context: context, alarm: alarm, title: title,
+                                      access: access, chat: chat, completion: completion)
+        }
+    }
+
+    private func processReview(_ target: ReviewTarget, domain: String, why: String, source: DomainReview.Source, context: String,
+                               alarm: Alarm, title: String, access: ClaudeCommand.WriteAccess, chat: ChatSession,
+                               completion: @escaping (ClaudeResponse, RunUsage?) -> Void) async {
+        let label = "리뷰 \(target.label)"
+        if let i = queued[domain]?.firstIndex(of: label) { queued[domain]?.remove(at: i) }
+        if queued[domain]?.isEmpty == true { queued[domain] = nil }
+        running[domain] = label
+        reviewing[domain] = "\(label) · \(why)"
+        let key = DomainReview.sessionKey(domain)
+        let sessionId = book.resumeId(key)
+        let map = DomainMap.load()
+        let memo = DomainReview.memoFile(domain)
+        let memoLines = ((try? String(contentsOf: memo, encoding: .utf8)) ?? "").split(separator: "\n").count
+        var runAccess = access
+        runAccess.dirs += map.knowledgePaths(for: domain).filter { !runAccess.dirs.contains($0) }
+        let helper = PipelineAccess.helper(settings: AppPaths.loadSettings())
+        let prompt = DomainReview.reviewPrompt(target: target, domain: domain, why: why, source: source, firstRun: sessionId == nil,
+                                               memo: memo, memoLines: memoLines, helper: helper,
+                                               context: context.replacingOccurrences(of: DomainMap.placeholder, with: map.knowledgeText(for: domain)))
+        let (response, usage) = await runOnce(chat: chat, title: "\(title) · \(key)", prompt: prompt, access: runAccess,
+                                              timeout: alarm.automationTimeout, sessionId: sessionId, quiet: false,
+                                              extraEnvironment: ["POKEMATE_REVIEW_REPO": target.fullName])
+        if case .success(_, let newId) = response, !newId.isEmpty {
+            book.record(repo: key, sessionId: newId, key: target.label, usage: usage, now: Date())
+        } else if let usage, let id = sessionId {
+            book.record(repo: key, sessionId: id, key: target.label, usage: usage, now: Date())
+        }
+        refreshUsage(key)
+        checkAlert(key)
+        save()
+        refreshMonth()
+        running[domain] = nil
+        reviewing[domain] = nil
+        completion(response, usage)
     }
 }

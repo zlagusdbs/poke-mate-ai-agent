@@ -520,6 +520,11 @@ struct AlarmEditor: View {
                             Toggle("레포별 작업 세션 이어 쓰기", isOn: Binding(get: { alarm.useWorkSessions ?? false }, set: { alarm.useWorkSessions = $0 ? true : nil }))
                                 .toggleStyle(PMCheckboxStyle())
                                 .help("같은 레포의 티켓은 같은 Claude 세션을 이어 써서, 이미 읽은 문서를 다시 읽지 않아요. 위쪽 \"작업\" 탭에서 기록을 보고 말을 걸 수 있어요")
+                            if alarm.useWorkSessions == true && alarm.reviewsPullRequests {
+                                Toggle("도메인 리뷰어 세션으로 리뷰", isOn: Binding(get: { alarm.useDomainReviewer ?? true }, set: { alarm.useDomainReviewer = $0 ? nil : false }))
+                                    .toggleStyle(PMCheckboxStyle())
+                                    .help("PR 의 도메인을 정하고(domains.json 의 repos, 없으면 PR 내용으로) 그 도메인의 리뷰어 세션({도메인}:reviewer)에서 지식 저장소·위키·도메인 메모를 읽고 리뷰해요. 끄면 레포 이름 세션에서 리뷰해요")
+                            }
                             if alarm.useWorkSessions == true {
                                 Toggle("역할별 세션으로 나눠 처리 (PM·개발·테스터·리뷰어)", isOn: Binding(get: { alarm.useRolePipeline ?? false }, set: { alarm.useRolePipeline = $0 ? true : nil }))
                                     .toggleStyle(PMCheckboxStyle())

@@ -104,6 +104,7 @@ final class ChatSession: ObservableObject {
 
     func runAutomation(title: String, prompt: String, access: ClaudeCommand.WriteAccess, timeout: TimeInterval = ClaudeRunner.automationTimeout,
                        sessionId: String? = nil, newSessionId: String? = nil, quiet: Bool = false,
+                       extraEnvironment: [String: String] = [:],
                        completion: @escaping (ClaudeResponse, RunUsage?) -> Void) {
         if !quiet { append(ChatMessage(role: .user, text: "🔔 \(title)")) }
         let runner = ClaudeRunner()
@@ -112,7 +113,7 @@ final class ChatSession: ObservableObject {
         Task {
             let response = await runner.run(prompt: prompt, sessionId: sessionId, settings: settings(),
                                             writeTools: access.tools, writeDirs: access.dirs,
-                                            timeout: timeout, newSessionId: newSessionId)
+                                            timeout: timeout, newSessionId: newSessionId, extraEnvironment: extraEnvironment)
             if !quiet {
                 switch response {
                 case .success(let text, _):
