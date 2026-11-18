@@ -109,7 +109,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sizeWatch = PopoverSize.shared.$size.removeDuplicates().sink { [weak self] size in
             self?.popover.contentSize = size
         }
-        popover.contentViewController = NSHostingController(rootView: RootView(model: model))
+        let hosting = NSHostingController(rootView: RootView(model: model))
+        hosting.sizingOptions = []
+        popover.contentViewController = hosting
+        popover.contentSize = PopoverSize.shared.size
         rangeWatch = model.$settings.map(\.pokedexRange).removeDuplicates().sink { range in
             UsageStore.shared.applyRange(range)
         }

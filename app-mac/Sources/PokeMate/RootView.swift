@@ -12,13 +12,16 @@ final class PopoverSize: ObservableObject {
     init() {
         let d = UserDefaults.standard
         let w = d.double(forKey: "popoverWidth"), h = d.double(forKey: "popoverHeight")
-        size = CGSize(width: w > 0 ? w : Self.defaultSize.width, height: h > 0 ? h : Self.defaultSize.height)
+        size = Self.clamped(CGSize(width: w > 0 ? w : Self.defaultSize.width, height: h > 0 ? h : Self.defaultSize.height))
+    }
+
+    static func clamped(_ new: CGSize) -> CGSize {
+        CGSize(width: min(maxSize.width, max(minSize.width, new.width.rounded())),
+               height: min(maxSize.height, max(minSize.height, new.height.rounded())))
     }
 
     func set(_ new: CGSize) {
-        let w = min(Self.maxSize.width, max(Self.minSize.width, new.width.rounded()))
-        let h = min(Self.maxSize.height, max(Self.minSize.height, new.height.rounded()))
-        size = CGSize(width: w, height: h)
+        size = Self.clamped(new)
     }
 
     func save() {
@@ -98,7 +101,8 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             FooterBar(model: model)
         }
-        .frame(width: popover.size.width, height: popover.size.height)
+        .frame(minWidth: PopoverSize.minSize.width, idealWidth: popover.size.width, maxWidth: .infinity,
+               minHeight: PopoverSize.minSize.height, idealHeight: popover.size.height, maxHeight: .infinity)
         .overlay(alignment: .bottomTrailing) { ResizeGrip().padding(2) }
     }
 }
