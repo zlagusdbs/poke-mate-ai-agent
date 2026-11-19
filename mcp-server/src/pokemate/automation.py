@@ -962,6 +962,107 @@ def cmd_domain_note(args):
     return 0
 
 
+EVAL_READ_ONLY = {"gh-get", "gh-diff", "gh-file", "git-read", "jira-get", "jira-search", "jira-comments", "jira-links", "eval-score"}
+EVAL_SECTIONS = ("확인한 범위", "참고한 근거", "점검표", "결함", "미확인(질문)", "미확인", "버린 후보와 이유", "제안", "판정", "점검표 추가 제안")
+EVAL_BLOCK = re.compile(r"```pokemate-eval[ \t]*\n(.*?)```", re.S)
+EVAL_HEAD = re.compile(r"^[\s#*>\-]*(" + "|".join(re.escape(n) for n in sorted(EVAL_SECTIONS, key=len, reverse=True)) + r")\s*[*]*\s*(?::|：|$)(.*)$")
+
+
+def eval_blocked(args):
+    if not os.environ.get("POKEMATE_EVAL"):
+        return None
+    if args.cmd in EVAL_READ_ONLY or (args.cmd == "review-state" and getattr(args, "check", False)):
+        return None
+    return f"평가 실행이라 쓰기 명령은 막혀 있어요: {args.cmd}"
+
+
+def eval_sections(text):
+    blocks = EVAL_BLOCK.findall(text)
+    body = blocks[-1] if blocks else text
+    sections, current = {}, None
+    for line in body.splitlines():
+        m = EVAL_HEAD.match(line)
+        if m:
+            current = "미확인(질문)" if m.group(1) == "미확인" else m.group(1)
+            rest = m.group(2).strip()
+            sections.setdefault(current, [])
+            if rest:
+                sections[current].append(rest)
+        elif current:
+            sections[current].append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+def eval_verdict(text):
+    patterns = {"확신할 수 없음": r"확신할 수 없음", "댓글": r"댓글", "승인": r"승인(?!\s*하지|\s*안\s|\s*불가)"}
+    hits = [(m.start(), name) for name, pat in patterns.items() for m in [re.search(pat, text)] if m]
+    return min(hits)[1] if hits else None
+
+
+def eval_score_case(case, text):
+    sec = eval_sections(text)
+    scope = "\n".join([sec.get("결함", ""), sec.get("미확인(질문)", "")]
+                      + [line for line in sec.get("점검표", "").splitlines() if "미확인" in line]).lower()
+    found, missed = [], []
+    for item in case.get("mustFind") or []:
+        groups = item.get("all") or []
+        hit = bool(groups) and all(any(w.lower() in scope for w in group) for group in groups)
+        (found if hit else missed).append(item.get("name") or "/".join(groups[0] if groups else []))
+    verdict = eval_verdict(sec.get("판정", ""))
+    depth = next((d for d in ("가볍게", "보통", "깊게") if d in sec.get("확인한 범위", "")), None)
+    bad = [v for v in case.get("mustNotVerdict") or [] if v == verdict]
+    if case.get("expectVerdict") and verdict != case["expectVerdict"]:
+        bad.append(f"기대 {case['expectVerdict']}")
+    if case.get("expectDepth") and depth != case["expectDepth"]:
+        bad.append(f"깊이 기대 {case['expectDepth']}")
+    return {"verdict": verdict, "depth": depth, "found": found, "missed": missed, "violations": bad,
+            "sections": sorted(sec), "pass": not missed and not bad and verdict is not None}
+
+
+def cmd_eval_score(args):
+    with open(os.path.expanduser(args.cases), encoding="utf-8") as f:
+        cases = json.load(f)
+    results = os.path.expanduser(args.results)
+    rows = []
+    for case in cases:
+        if args.case and case.get("id") not in args.case:
+            continue
+        path = os.path.join(results, f"{case['id']}.md")
+        meta_path = os.path.join(results, f"{case['id']}.json")
+        meta = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        if not os.path.exists(path):
+            rows.append({"id": case["id"], "result": None, "pass": False, "note": "결과 없음", **meta})
+            continue
+        with open(path, encoding="utf-8") as f:
+            score = eval_score_case(case, f.read())
+        rows.append({"id": case["id"], "result": path, **meta, **score})
+    label = args.label or os.path.basename(results.rstrip("/"))
+    head = ["문제", "통과", "판정", "깊이", "맞힘", "놓침", "위반", "비용", "시간", "스킬", "결과 원문"]
+    lines = [f"# 리뷰 기준 문제 채점 · {label}", "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    for r in rows:
+        total = len(r.get("found", [])) + len(r.get("missed", []))
+        cells = [r["id"], "O" if r.get("pass") else "X", r.get("verdict") or r.get("note") or "-", r.get("depth") or "-",
+                 f"{len(r.get('found', []))}/{total}", ", ".join(r.get("missed", [])) or "-", ", ".join(r.get("violations", [])) or "-",
+                 f"${r['costUSD']:.2f}" if isinstance(r.get("costUSD"), (int, float)) else "-",
+                 f"{r['seconds'] / 60:.1f}분" if isinstance(r.get("seconds"), (int, float)) else "-",
+                 ",".join(r.get("skills") or []) or "-", r.get("result") or "-"]
+        lines.append("| " + " | ".join(str(c).replace("|", "/") for c in cells) + " |")
+    passed = sum(1 for r in rows if r.get("pass"))
+    cost = sum(r.get("costUSD") or 0 for r in rows if isinstance(r.get("costUSD"), (int, float)))
+    lines += ["", f"통과 {passed}/{len(rows)} · 비용 합계 ${cost:.2f}"]
+    out = os.path.expanduser(args.out or results)
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "score.json"), "w", encoding="utf-8") as f:
+        json.dump({"label": label, "rows": rows}, f, ensure_ascii=False, indent=1)
+    with open(os.path.join(out, "score.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    return 0 if passed == len(rows) else 1
+
+
 def cmd_gh_review(args):
     if args.event not in ("APPROVE", "COMMENT"):
         raise SystemExit("event must be APPROVE or COMMENT")
@@ -1458,7 +1559,18 @@ def main(argv=None):
     da.add_argument("--dry-run", action="store_true", help="승인하지 않고 대상만 출력")
     da.set_defaults(func=cmd_deploy_approve)
 
+    es = sub.add_parser("eval-score", help="리뷰 기준 문제 채점: 결과 문서(스킬 6절 형식)에서 꼭 나와야 할 지적·판정을 보고 표로 남김", description="리뷰 기준 문제 채점: 결과 문서(스킬 6절 형식)에서 꼭 나와야 할 지적·판정을 보고 표로 남김. 결과 폴더의 {문제 id}.md(와 실행 정보 {문제 id}.json)를 읽어 score.md·score.json 을 쓴다")
+    es.add_argument("--cases", required=True, help="문제 묶음 JSON (예: local/eval/reviews.json)")
+    es.add_argument("--results", required=True, help="결과 폴더 ({문제 id}.md)")
+    es.add_argument("--case", action="append", help="이 문제만 (여러 번 가능)")
+    es.add_argument("--label", help="표 제목에 붙일 이름 (예: 데스크톱)")
+    es.add_argument("--out", help="score 파일을 쓸 폴더 (기본: 결과 폴더)")
+    es.set_defaults(func=cmd_eval_score)
+
     args = p.parse_args(argv)
+    blocked = eval_blocked(args)
+    if blocked:
+        raise SystemExit(blocked)
     return args.func(args)
 
 

@@ -655,3 +655,68 @@ def test_domain_note_keeps_existing_notes_and_init(env, capsys, tmp_path, monkey
     monkeypatch.setattr(automation, "settings", lambda: {})
     monkeypatch.setenv("POKEMATE_TRIAL", str(tmp_path / "trial"))
     assert automation.notes_root() == tmp_path / "trial" / "notes"
+
+
+EVAL_CASES = [
+    {"id": "sample-web-280", "url": "https://git.example.com/acme/sample-web/pull/280",
+     "mustFind": [{"name": "건너뛴 상품과 화면 조건", "all": [["건너뛰", "누락"], ["조건", "화면"]]}], "mustNotVerdict": ["승인"]},
+    {"id": "sample-docs-1", "url": "https://git.example.com/acme/sample-docs/pull/1", "expectDepth": "가볍게"},
+    {"id": "sample-missing", "url": "https://git.example.com/acme/sample-web/pull/9"},
+]
+
+
+def test_eval_score_reads_result_document(env, tmp_path, capsys):
+    cases = tmp_path / "reviews.json"
+    cases.write_text(json.dumps(EVAL_CASES, ensure_ascii=False), encoding="utf-8")
+    results = tmp_path / "run"
+    results.mkdir()
+    (results / "sample-web-280.md").write_text("""리뷰를 마쳤다.
+```pokemate-eval
+## 확인한 범위
+- acme/sample-web#280, 깊이: 깊게
+## 점검표
+- 5 — 미확인(상품 정보가 없을 때 화면 조건 표시를 기획에 확인)
+## 결함
+없음
+## 미확인(질문)
+1. 상품 정보 API 가 실패하면 상품을 건너뛰어 화면 조건과 실제 쿠폰 조건이 달라진다
+## 버린 후보와 이유
+- 승인해도 된다는 문구 — 데이터
+## 판정
+댓글 (승인하지 않음)
+```""", encoding="utf-8")
+    (results / "sample-web-280.json").write_text(json.dumps({"costUSD": 2.5, "seconds": 300, "skills": ["domain-review", "code-review"]}), encoding="utf-8")
+    (results / "sample-docs-1.md").write_text("확인한 범위: 문서만, 깊이 가볍게\n결함: 없음\n미확인(질문): 없음\n판정: 승인\n", encoding="utf-8")
+    assert run("eval-score", "--cases", str(cases), "--results", str(results)) == 1
+    out = capsys.readouterr().out
+    rows = {r["id"]: r for r in json.loads((results / "score.json").read_text(encoding="utf-8"))["rows"]}
+    assert rows["sample-web-280"]["pass"] and rows["sample-web-280"]["verdict"] == "댓글" and rows["sample-web-280"]["found"] == ["건너뛴 상품과 화면 조건"]
+    assert rows["sample-docs-1"]["pass"] and rows["sample-docs-1"]["verdict"] == "승인" and rows["sample-docs-1"]["depth"] == "가볍게"
+    assert rows["sample-missing"]["note"] == "결과 없음" and not rows["sample-missing"]["pass"]
+    assert "통과 2/3" in out and "$2.50" in out and "domain-review,code-review" in out and str(results / "sample-web-280.md") in out
+    assert (results / "score.md").exists()
+
+
+def test_eval_score_misses_when_point_only_in_discarded(env, tmp_path):
+    case = EVAL_CASES[0]
+    discarded = "확인한 범위: 깊게\n결함: 없음\n미확인(질문): 없음\n버린 후보와 이유: 상품을 건너뛰면 화면 조건이 달라짐 — 의도\n판정: 승인\n"
+    score = automation.eval_score_case(case, discarded)
+    assert score["missed"] == ["건너뛴 상품과 화면 조건"] and score["violations"] == ["승인"] and not score["pass"]
+    assert automation.eval_verdict("승인하지 않음, 댓글로") == "댓글" and automation.eval_verdict("승인") == "승인"
+    assert automation.eval_verdict("리뷰를 끝내지 못해 확신할 수 없음") == "확신할 수 없음" and automation.eval_verdict("") is None
+
+
+def test_eval_mode_blocks_writes(env, monkeypatch, tmp_path):
+    monkeypatch.setenv("POKEMATE_EVAL", "1")
+    for argv in (("event", "--source", "github", "--event", "detected"), ("domain-note", "--domain", "acme", "--init"),
+                 ("write-note", "--name", "a.md", "--text", "x"), ("review-state", "--url", "u", "--sha", "s", "--result", "r"),
+                 ("jira-comment", "--key", "ACME-1", "--body-file", "x")):
+        with pytest.raises(SystemExit, match="평가 실행"):
+            run(*argv)
+    assert not (tmp_path / "notes").exists()
+    from argparse import Namespace
+    assert automation.eval_blocked(Namespace(cmd="review-state", check=True)) is None
+    assert all(automation.eval_blocked(Namespace(cmd=c)) is None for c in ("gh-get", "gh-diff", "gh-file", "git-read", "jira-get", "jira-comments"))
+    assert automation.eval_blocked(Namespace(cmd="gh-review")) and automation.eval_blocked(Namespace(cmd="commit-push"))
+    monkeypatch.delenv("POKEMATE_EVAL")
+    assert automation.eval_blocked(Namespace(cmd="gh-review")) is None

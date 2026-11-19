@@ -10,6 +10,7 @@ let package = Package(
         .executableTarget(name: "PokeMate", dependencies: ["PokeMateCore"]),
         .executableTarget(name: "PokeMateCoreChecks", dependencies: ["PokeMateCore"]),
         .executableTarget(name: "PokeMateTrial", dependencies: ["PokeMateCore"]),
+        .executableTarget(name: "PokeMateEval", dependencies: ["PokeMateCore"]),
     ],
     swiftLanguageModes: [.v5]
 )

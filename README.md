@@ -141,6 +141,15 @@ GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + �
 4. **리뷰 절차는 스킬이 원본**: 판단(깊이 → 지식 읽기 → 코드 읽기 → 점검표 답하기 → 후보 분류 → 판정 → 결과 문서 → 노트)은 홈의 `domain-review` 스킬(`~/.claude/skills/domain-review`)을 그대로 따른다. 데스크톱에서 리뷰할 때와 같은 스킬이다. 프롬프트(`github-review`·`jira-reviewer`)는 PokeMate 고유 단계(확인·알림·`gh-review` 등록·`review-state`, 명령 사용법, 결함 기준 보충)만 정한다. 결함이나 미확인이 하나라도 있으면 승인하지 않고 질문을 담은 댓글 리뷰로 올린다. 스킬은 앱이 홈 스킬을 작업 폴더에 연결할 때(실행마다) 같이 연결되고, 허용 목록에 `Skill(domain-review)` 가 있어야 한다.
 5. **로컬 레포가 없을 때**: `pokemate auto gh-file --repo … --ref … --path …` 로 PR 저장소 파일을 읽는다(읽기 전용, 리뷰 중에는 그 PR 저장소만).
 
+### 리뷰 기준 문제 묶음 (수준 확인)
+
+프롬프트·스킬·노트를 바꾼 뒤 자동 리뷰가 나빠졌는지 보려고, 답을 아는 PR 을 모아 같은 경로로 다시 돌려 본다.
+
+1. **문제 묶음**: `local/eval/reviews.json` (Git 밖). 문제마다 `id`, `url`(PR 주소), `domain`(비우면 domains.json·기록으로 정함), `mustFind`(꼭 나와야 할 지적: `{"name": "…", "all": [["낱말", "다른 표현"], ["낱말"]]}` — 묶음마다 하나 이상이 결함·미확인 절에 나오면 맞힘), `mustNotVerdict`(나오면 안 되는 판정, 예: `["승인"]`), 선택 `expectVerdict`·`expectDepth`(가볍게·보통·깊게).
+2. **실행**: `app-mac/scripts/review-eval.sh [묶음 파일] [--case id]` 가 문제마다 새 세션으로 실제 자동 리뷰와 같은 프롬프트(github-review + 도메인 리뷰어 안내 + 공유 노트)와 domain-review 스킬로 리뷰한다. 쓰기는 두 겹으로 막는다: 허용 목록에 읽기 명령(gh-get·gh-diff·gh-file·git-read·jira-get·jira-comments)과 스킬만 넣고, `POKEMATE_EVAL=1` 이면 helper 가 쓰기 명령을 모두 거절한다. 결과 문서는 답 끝 `pokemate-eval` 블록으로 받는다.
+3. **결과**: `local/eval/runs/{시각}/` 에 문제마다 답 원문(`{id}.md`)·실행 정보(`{id}.json`: 비용·시간·토큰·부른 스킬)와 채점표(`score.md`·`score.json`: 통과·판정·깊이·맞힘/놓침·위반·비용·시간·스킬·원문 경로). 핵심어 일치라 표현이 다르면 놓침으로 나올 수 있으니 원문을 같이 본다.
+4. **데스크톱과 비교**: 데스크톱에서 같은 PR 을 domain-review 스킬로 리뷰한 결과 문서를 한 폴더에 `{id}.md` 로 두고 `pokemate auto eval-score --cases local/eval/reviews.json --results {폴더} --label 데스크톱` 으로 같은 표를 만든다.
+
 ### 역할별 처리 (Jira)
 
 트리거 알람에서 "레포별 작업 세션 이어 쓰기" 아래 "역할별 세션으로 나눠 처리"를 켜면, 레포 세션 하나가 다 하던 Jira 처리를 역할 세션 4개(PM·개발·테스터·리뷰어)가 나눠 맡는다.
@@ -181,6 +190,7 @@ uv --directory <저장소>/mcp-server run --quiet pokemate auto <하위명령> [
 | `gh-get` · `gh-diff` | GitHub 조회 |
 | `gh-file` | PR 저장소 파일 내용 읽기 (읽기 전용, 리뷰 중에는 그 PR 저장소만) |
 | `domain-note` | 도메인 노트(`{노트 폴더}/{도메인}/notes.md`)의 `--kind` 절(용어집·업무 규칙·장애·함정·결정·동작)에 확인한 사실 한 줄 추가 (같은 줄은 건너뜀, 300줄 넘으면 알림). 도메인 폴더가 없으면 `checklist.md`·`notes.md` 빈 틀을 만든다(`--init` 은 틀만). `default` 는 거절 |
+| `eval-score` | 리뷰 기준 문제 채점: 결과 폴더의 `{id}.md` 결과 문서에서 꼭 나와야 할 지적·판정·깊이를 보고 `score.md`·`score.json` 을 남김 (`POKEMATE_EVAL=1` 이면 읽기 명령과 이것만 실행됨) |
 | `gh-review` | 리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절) |
 | `deploy-approve` | 내가 승인자인 승인 대기 배포를 승인 (`--id` 한 건만, `--dry-run` 대상만 출력). 내가 만든 배포는 건너뛰고, 승인되면 배포 시스템이 배치를 시작한다. 결과 JSON, 활동 기록에 남김 |
 | `write-note` | 댓글·리뷰 본문 파일 쓰기 |
@@ -274,6 +284,7 @@ cd mcp-server && uv run pytest                     # Python 테스트
 cd app-mac && swift run PokeMateCoreChecks       # Swift 로직 검증 (XCTest 대신 실행형)
 cd app-mac && ./scripts/bundle.sh                  # 앱 묶기
 cd app-mac && ./scripts/pipeline-trial.sh /tmp/pm-trial   # Jira 역할 처리 시험 (가짜 Jira·로컬 원격, 실제 Claude 실행)
+cd app-mac && ./scripts/review-eval.sh                    # 리뷰 기준 문제 묶음 (local/eval/reviews.json, 쓰기 막고 실제 Claude 실행)
 ```
 
 연결 계정은 macOS 키체인(서비스 이름 `poke-mate`)에 저장한다.

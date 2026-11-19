@@ -164,8 +164,12 @@ public struct DomainNotes: Equatable, Sendable {
     }
 
     public static func load(repoDir: String = AppPaths.loadSettings().repoDir, home: String = NSHomeDirectory()) -> DomainNotes {
-        if let override = ProcessInfo.processInfo.environment["POKEMATE_NOTES_DIR"], !override.isEmpty { return DomainNotes(root: override) }
-        return DomainNotes(root: root(fromConnections: try? Data(contentsOf: LocalNames.file(repoDir: repoDir)), home: home))
+        if let override = ProcessInfo.processInfo.environment["POKEMATE_NOTES_DIR"], !override.isEmpty { return DomainNotes(root: resolved(override)) }
+        return DomainNotes(root: resolved(root(fromConnections: try? Data(contentsOf: LocalNames.file(repoDir: repoDir)), home: home)))
+    }
+
+    public static func resolved(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
     public func checklist(_ domain: String) -> String { root + "/" + domain + "/checklist.md" }

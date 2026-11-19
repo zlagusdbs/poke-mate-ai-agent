@@ -1457,6 +1457,37 @@ do {
     check(DomainNotes.root(fromConnections: rows, home: "/u") == "/u/kb/notes" && DomainNotes.root(fromConnections: nil, home: "/u") == "/u/.claude/references/notes"
           && DomainNotes.root(fromConnections: Data(#"[{"kind":"settings","id":"automation","domainNotesDir":" "}]"#.utf8), home: "/u") == "/u/.claude/references/notes",
           "notes: 노트 폴더는 automation 설정 domainNotesDir, 없으면 ~/.claude/references/notes")
+    let linkBase = FileManager.default.temporaryDirectory.appendingPathComponent("pokemate-notes-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: linkBase.appendingPathComponent("real"), withIntermediateDirectories: true)
+    try? FileManager.default.createSymbolicLink(at: linkBase.appendingPathComponent("link"), withDestinationURL: linkBase.appendingPathComponent("real"))
+    check(DomainNotes.resolved(linkBase.appendingPathComponent("link").path).hasSuffix("/real") && DomainNotes.resolved("/n/none") == "/n/none",
+          "notes: 노트 폴더가 심볼릭 링크면 실제 경로로 (Claude 권한은 실제 경로로 판단)")
+    try? FileManager.default.removeItem(at: linkBase)
+}
+
+do {
+    let raw = Data(#"[{"id": "sample-web-280", "url": "https://git.example.com/acme/sample-web/pull/280", "domain": "acme", "mustFind": []}, {"id": "", "url": "https://git.example.com/acme/x/pull/1"}, {"id": "bad", "url": "nope"}, {"id": "sample-docs-1", "url": "https://git.example.com/acme/sample-docs/pull/1"}]"#.utf8)
+    let cases = ReviewEval.loadCases(raw)
+    check(cases.map(\.id) == ["sample-web-280", "sample-docs-1"] && cases[0].domain == "acme" && cases[1].domain == nil, "eval: 문제 묶음 읽기 (id·주소 없는 것은 뺌)")
+    let access = ReviewEval.access(helper: "H", dirs: ["/w", "/n", "/w"])
+    check(access.dirs == ["/w", "/n"] && access.tools.contains("Bash(H gh-diff:*)") && access.tools.contains("Skill(domain-review)") && access.tools.contains("Skill(code-review)")
+          && !access.tools.contains { $0.contains("gh-review") || $0.contains("event") || $0.contains("domain-note") || $0.contains("write-note") || $0.contains("review-state") || $0.hasPrefix("Edit(") || $0.hasPrefix("Write(") }
+          && ReviewEval.environment(target: ReviewTarget.parse(url: cases[0].url)!) == ["POKEMATE_EVAL": "1", "POKEMATE_REVIEW_REPO": "acme/sample-web"],
+          "eval: 읽기 명령과 스킬만 허용, 쓰기 막는 환경")
+    let emap = DomainMap.parse(Data(#"{"acme": {"repos": ["sample-docs"]}}"#.utf8))
+    let target = ReviewTarget.parse(url: cases[0].url)!
+    check(ReviewEval.domain(for: cases[0], target: target, map: emap, book: ReviewDomainBook()).domain == "acme"
+          && ReviewEval.domain(for: cases[1], target: ReviewTarget.parse(url: cases[1].url)!, map: emap, book: ReviewDomainBook()).source == .explicit
+          && ReviewEval.domain(for: ReviewEvalCase(id: "x", url: cases[0].url, domain: "nope"), target: target, map: emap, book: ReviewDomainBook()).domain == "default",
+          "eval: 도메인은 문제에 적은 것 → 기록 → default")
+    let ep = ReviewEval.prompt(item: cases[0], target: target, domain: "acme", why: "평가", source: .chosen, notes: DomainNotes(root: "/n", lines: { _ in 3 }),
+                               helper: "H", template: "리뷰 {{helper}} gh-diff\n{{knowledge}}", knowledge: "   - `kb`")
+    check(ep.contains("리뷰 H gh-diff") && ep.contains("   - `kb`") && !ep.contains("{{") && ep.contains("```pokemate-eval") && ep.contains("링크: \(cases[0].url)")
+          && ep.contains("세션 acme:reviewer") && ep.contains("review-state 저장"), "eval: 실제 리뷰와 같은 프롬프트 + 평가 끝맺음")
+    let transcript = [#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"domain-review"}}]}}"#,
+                      #"{"type":"user","message":{"content":"x"}}"#,
+                      #"{"type":"assistant","message":{"content":[{"type":"text","text":"a"},{"type":"tool_use","name":"Skill","input":{"skill":"code-review","args":"high"}},{"type":"tool_use","name":"Bash","input":{}}]}}"#].joined(separator: "\n")
+    check(ReviewEval.skillsUsed(transcript: transcript) == ["domain-review", "code-review"], "eval: 기록에서 부른 스킬 찾기 (스킬 안에서 부른 것 포함)")
 }
 
 print("passed: \(passed), failed: \(failures)")

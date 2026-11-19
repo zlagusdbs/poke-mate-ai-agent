@@ -31,15 +31,14 @@ $H event --notify --source github --task pokemate-review --event detected --key 
    - 0절 도메인: 위 "이번 건" 에서 이미 정했다. 다시 정하지 않는다. 점검표·노트 경로와 폴더가 없을 때 할 일은 위 "도메인 노트" 줄대로.
    - 1절 지식: 3번의 "부른 쪽이 알려 준 지식 출처" 는 아래 지식 저장소(읽기 전용, 키워드로 Grep, README.md 가 있으면 그것부터)와 사내 위키(`wiki_search` → 필요하면 `wiki_get_page`)다. 4번의 티켓·댓글은 `jira-get`·`jira-comments`, PR 본문·기존 리뷰·댓글은 `gh-get repos/{o}/{r}/pulls/{n}/reviews`, `.../comments`, `repos/{o}/{r}/issues/{n}/comments`.
 {{knowledge}}
-   - 2절 코드: diff 는 `$H gh-diff`, 주변 코드는 `git-read ... show refs/review/{n}:{경로}` 또는 `gh-file`. `code-review` 스킬 args 는 아래 형태 그대로 쓴다(`--comment`·`--fix` 는 붙이지 않는다. 수준은 스킬 2절의 깊이별 수준):
-     `{medium|high} {PR url} (diff 는 `$H gh-diff --repo {owner/repo} --pr {n}` 로 받는다. gh·git 직접 실행은 막혀 있다. 주변 코드는 `$H git-read --repo {레포폴더} -- show refs/review/{n}:{경로}` 로 읽는다. 찾은 것은 보고만 하고 GitHub 에 쓰지 않는다.)`
-   - 4절 결함 기준 보충: 결함으로 세는 것은 잘못된 동작(로직 오류·경계값·null·예외 누락), 데이터 손상·중복 처리, 보안(비밀값 노출·인증 우회·인젝션), 동시성 문제, 호환성 깨짐(API·스키마·설정 키), 운영 장애 위험(타임아웃·무한 재시도·로그 폭증)이다. 스타일·이름·취향·문서·중복 코드·커밋 메시지 형식은 결함이 아니고, 쓸 만하면 제안으로만 넣는다.
+   - 2절 코드: diff 는 `$H gh-diff`, 주변 코드는 `git-read ... show refs/review/{n}:{경로}` 또는 `gh-file`. `code-review` 스킬 args 는 아래 형태 그대로 쓴다(`--comment`·`--fix` 는 붙이지 않는다. 가볍게면 부르지 않는다):
+     `high {PR url} (diff 는 `$H gh-diff --repo {owner/repo} --pr {n}` 로 받는다. gh·git 직접 실행은 막혀 있다. 주변 코드는 `$H git-read --repo {레포폴더} -- show refs/review/{n}:{경로}` 로 읽는다. 찾은 것은 보고만 하고 GitHub 에 쓰지 않는다.)`
    - 7절 노트: 위 "도메인 노트" 줄의 `domain-note` 명령으로만 남긴다.
 3. 스킬이 diff 를 받지 못했거나 리뷰를 끝내지 못했으면(스킬 5절 "확신할 수 없음") GitHub 에 아무것도 쓰지 않고 3절의 blocked 로 처리한다.
 
 ## 3. 등록 (스킬 5절 판정 → GitHub)
 - 본문은 첫 줄 `🤖 자동 리뷰 (Claude)` 다음에 스킬 6절 결과 문서를 그 절 순서 그대로 쓴다. "확인한 범위" 첫 줄은 도메인 줄이다. 결과 문서 끝의 "점검표 추가 제안" 은 GitHub 본문에 넣지 않고 마지막 답에 적는다.
-- 판정 승인(결함 0건 그리고 미확인 0건) → `--event APPROVE`. 결과 문서 뒤에 (있으면) 결함 아닌 제안 최대 3개, 마지막 줄에 승인 이유 한 줄(예: "결함 없이 마이너한 변경만 있어 승인합니다."). 줄 댓글 파일은 넣지 않는다.
+- 판정 승인(결함 0건 그리고 미확인 0건) → `--event APPROVE`. 결과 문서 뒤 마지막 줄에 승인 이유 한 줄(예: "결함 없이 마이너한 변경만 있어 승인합니다."). 줄 댓글 파일은 넣지 않는다.
 - 판정 댓글(결함 또는 미확인이 있음) → `--event COMMENT`. 결함마다 줄 댓글(comments 파일). 미확인은 본문 "미확인(질문)" 절에 항목마다 무엇을 확인해야 하는지와 왜 필요한지(어떤 입력·상태에서 어떤 결과가 달라지는지)를 질문으로 적고, 관련 줄이 있으면 줄 댓글로도 묻는다. 승인·변경 요청은 하지 않는다.
 - 판정 확신할 수 없음(diff 가 너무 큼, 생성 파일 위주, 맥락 부족, 도구 실패) → GitHub 에 아무것도 쓰지 않고 `--event blocked` 로 이유를 알린다.
 
