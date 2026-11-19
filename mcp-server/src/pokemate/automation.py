@@ -865,26 +865,100 @@ def cmd_gh_file(args):
 
 DOMAIN_NAME = re.compile(r"^[^/\\:\s.][^/\\:\s]*$")
 MEMO_WARN_LINES = 300
+NOTE_KINDS = ("용어집", "업무 규칙", "장애", "함정", "결정", "동작")
+NOTES_FRAME = """# {domain} — 확인한 사실
+
+쓰는 규칙은 `../README.md`. 한 줄에 사실 하나, 끝에 근거와 날짜.
+
+## 용어집 (업무 용어 ↔ 코드 이름 ↔ 별칭)
+
+## 업무 규칙 (규칙, 예외, 근거)
+
+## 장애 (증상, 원인, 조치, 재발 방지)
+
+## 함정 (이렇게 하면 터진다, 왜, 대신 이렇게)
+
+## 결정 (무엇을, 왜, 버린 대안)
+
+## 동작 (코드로 확인한 구조·흐름)
+"""
+CHECKLIST_FRAME = """# {domain} — 점검표 (초안, 사람 확인 전)
+
+이 도메인을 건드리는 **개발과 리뷰 모두** 이 질문에 하나씩 답한다.
+답은 셋 중 하나: `해당 없음` / `확인함 (근거)` / `미확인 (무엇을 누구에게 물어야 하는지)`.
+미확인이 하나라도 있으면 리뷰는 승인하지 않고, 개발은 멈추고 묻는다.
+
+| # | 질문 | 왜 묻나 |
+|---|---|---|
+
+## 사람이 확인할 것
+- 아직 질문이 없다. 이 도메인을 건드릴 때 반드시 답할 질문을 채워 달라.
+- 확정되면 맨 위의 "(초안, 사람 확인 전)"을 지운다.
+"""
+
+
+def notes_root():
+    from pathlib import Path
+    configured = os.environ.get("POKEMATE_NOTES_DIR") or settings().get("domainNotesDir")
+    if configured:
+        return Path(os.path.expanduser(configured))
+    if trial_dir():
+        return Path(trial_dir()) / "notes"
+    return Path(HOME) / ".claude" / "references" / "notes"
+
+
+def ensure_domain_notes(domain):
+    folder = notes_root() / domain
+    created = []
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, frame in (("checklist.md", CHECKLIST_FRAME), ("notes.md", NOTES_FRAME)):
+        path = folder / name
+        if not path.exists():
+            path.write_text(frame.format(domain=domain), encoding="utf-8")
+            created.append(name)
+    if created:
+        print(f"created {folder}: {'·'.join(created)} 빈 틀. 이 도메인의 점검표가 아직 없어요(사람이 채울 때까지 초안). 결과와 알림에 알린다")
+    return folder
+
+
+def insert_note(lines, kind, entry):
+    head = next((i for i, line in enumerate(lines) if line == f"## {kind}" or line.startswith(f"## {kind} ")), None)
+    if head is None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines += ["", f"## {kind}"]
+        head = len(lines) - 1
+    end = next((i for i in range(head + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    pos = next((i + 1 for i in range(end - 1, head, -1) if lines[i].strip()), head + 1)
+    lines.insert(pos, entry)
+    if pos + 1 < len(lines) and lines[pos + 1].startswith("## "):
+        lines.insert(pos + 1, "")
+    return lines
 
 
 def cmd_domain_note(args):
-    from .connections import local_dir
     if not DOMAIN_NAME.match(args.domain):
         raise SystemExit("bad domain name")
-    text = " ".join(args.text.split())
-    if not text:
+    if args.domain == "default":
+        raise SystemExit("도메인을 정하지 못한 건(default)은 노트를 남기지 않아요")
+    text = " ".join((args.text or "").split())
+    if not text and not args.init:
         raise SystemExit("empty note")
-    folder = local_dir() / "domains"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{args.domain}.md"
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else [f"# {args.domain} 도메인 메모", ""]
+    if text and not (args.kind and args.source):
+        raise SystemExit("--kind 와 --source 가 필요해요")
+    folder = ensure_domain_notes(args.domain)
+    if not text:
+        print(f"ready {folder}")
+        return 0
+    path = folder / "notes.md"
+    lines = path.read_text(encoding="utf-8").splitlines()
     if any(line.startswith(f"- {text} (") for line in lines):
         print(f"skipped: already noted ({path})")
         return 0
-    lines.append(f"- {text} (출처: {args.source}, {now().strftime('%Y-%m-%d')})")
+    insert_note(lines, args.kind, f"- {text} (출처: {args.source}, {now().strftime('%Y-%m-%d')})")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    count = sum(1 for line in lines if line.startswith("- "))
-    print(f"noted {path} ({count}줄)" + (f" · {MEMO_WARN_LINES}줄이 넘었어요. 정리가 필요해요" if count > MEMO_WARN_LINES else ""))
+    count = len(lines)
+    print(f"noted {path} [{args.kind}] ({count}줄)" + (f" · {MEMO_WARN_LINES}줄이 넘었어요. 사람에게 알린다(주제별로 나누거나 팀 KB 로)" if count > MEMO_WARN_LINES else ""))
     return 0
 
 
@@ -1305,10 +1379,12 @@ def main(argv=None):
     gf.add_argument("--path", required=True, help="파일 또는 폴더 경로")
     gf.set_defaults(func=cmd_gh_file)
 
-    dn = sub.add_parser("domain-note", help="도메인 메모(local/domains/{도메인}.md)에 확인한 사실 한 줄 추가", description="도메인 메모(local/domains/{도메인}.md)에 확인한 사실 한 줄 추가")
+    dn = sub.add_parser("domain-note", help="도메인 노트(노트 폴더/{도메인}/notes.md)의 종류별 절에 확인한 사실 한 줄 추가", description="도메인 노트(노트 폴더/{도메인}/notes.md)의 종류별 절에 확인한 사실 한 줄 추가. 노트 폴더는 automation 설정 domainNotesDir(기본 ~/.claude/references/notes). 도메인 폴더가 없으면 checklist.md·notes.md 빈 틀을 만든다")
     dn.add_argument("--domain", required=True, help="도메인 이름")
-    dn.add_argument("--source", required=True, help="출처 (예: sample-web#123, ACME-1)")
-    dn.add_argument("--text", required=True, help="코드·문서로 확인한 사실과 근거")
+    dn.add_argument("--kind", choices=NOTE_KINDS, help="종류: " + "|".join(NOTE_KINDS))
+    dn.add_argument("--source", help="출처 (예: sample-web#123, ACME-1)")
+    dn.add_argument("--text", help="코드·문서로 확인한 사실과 근거")
+    dn.add_argument("--init", action="store_true", help="쓰지 않고 도메인 폴더 빈 틀만 준비")
     dn.set_defaults(func=cmd_domain_note)
 
     gr = sub.add_parser("gh-review", help="리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절)", description="리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절)")

@@ -9,5 +9,5 @@
   {"id": "github", "name": "GitHub", "group": "github", "enabled": true, "baseUrl": "https://github.example.com", "auth": "gh", "company": "Company A"},
   {"id": "microsoft365", "name": "Microsoft 365", "group": "claude", "enabled": true, "baseUrl": null, "auth": "claude.ai", "company": "Company A"},
   {"id": "groupware", "name": "Groupware", "group": "groupware", "enabled": false, "baseUrl": null, "company": "Company B"},
-  {"kind": "settings", "id": "automation", "githubUser": "", "workDir": "~/Workspace", "worklogCalendarUrl": "https://calendar.example.com/calendar", "worklogCalendarTitle": "근무 캘린더", "worklogAliases": [], "holidayCountry": "KR", "recurringTitles": ["회의", "휴가"], "transitions": {"start": "In Progress", "done": "In Review"}, "testCommands": {"example-service": "./gradlew test"}}
+  {"kind": "settings", "id": "automation", "githubUser": "", "workDir": "~/Workspace", "worklogCalendarUrl": "https://calendar.example.com/calendar", "worklogCalendarTitle": "근무 캘린더", "worklogAliases": [], "holidayCountry": "KR", "recurringTitles": ["회의", "휴가"], "transitions": {"start": "In Progress", "done": "In Review"}, "testCommands": {"example-service": "./gradlew test"}, "domainNotesDir": "~/.claude/references/notes"}
 ]

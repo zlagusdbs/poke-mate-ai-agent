@@ -377,6 +377,7 @@ extension WorkSessionCenter {
         var config = PipelineConfig.load(promptsDir: Rules.promptsDir, access: pipelineTable(settings: settings), dir: PipelineState.dir(),
                                          helper: PipelineAccess.helper(settings: settings), fallbackDir: Rules.folder(.prompt, layer: .shared))
         config.domains = DomainMap.load()
+        config.notes = DomainNotes.load()
         let timeout = TimeInterval(max(1, start.timeoutMinutes) * 60)
         let io = PipelineIO(
             runRole: { [weak self] role, prompt, sessionId, newSessionId, access in
@@ -508,14 +509,14 @@ extension WorkSessionCenter {
         let key = DomainReview.sessionKey(domain)
         let sessionId = book.resumeId(key)
         let map = DomainMap.load()
-        let memo = DomainReview.memoFile(domain)
-        let memoLines = ((try? String(contentsOf: memo, encoding: .utf8)) ?? "").split(separator: "\n").count
+        let notes = DomainNotes.load()
         var runAccess = access
-        runAccess.dirs += map.knowledgePaths(for: domain).filter { !runAccess.dirs.contains($0) }
+        runAccess.dirs += (map.knowledgePaths(for: domain) + [notes.root]).filter { !runAccess.dirs.contains($0) }
         let helper = PipelineAccess.helper(settings: AppPaths.loadSettings())
         let prompt = DomainReview.reviewPrompt(target: target, domain: domain, why: why, source: source, firstRun: sessionId == nil,
-                                               memo: memo, memoLines: memoLines, helper: helper,
-                                               context: context.replacingOccurrences(of: DomainMap.placeholder, with: map.knowledgeText(for: domain)))
+                                               notes: notes, helper: helper,
+                                               context: context.replacingOccurrences(of: DomainMap.placeholder, with: map.knowledgeText(for: domain))
+                                                   .replacingOccurrences(of: "{{helper}}", with: helper))
         let (response, usage) = await runOnce(chat: chat, title: "\(title) · \(key)", prompt: prompt, access: runAccess,
                                               timeout: alarm.automationTimeout, sessionId: sessionId, quiet: false,
                                               extraEnvironment: ["POKEMATE_REVIEW_REPO": target.fullName])

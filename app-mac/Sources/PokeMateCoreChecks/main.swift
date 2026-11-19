@@ -1268,6 +1268,21 @@ do {
     let kprompts = await kscript.prompts
     check(kprompts.first?.1.contains("지식:\n   - `~/Workspace/acme-kb`") == true && kprompts.first?.1.contains("{{knowledge}}") == false
           && kprompts.first?.2.dirs.contains("/u/Workspace/acme-kb") == true, "knowledge: 프롬프트 자리표시 치환, 읽기 폴더에 추가")
+    check(kprompts.first?.1.contains("점검표 `/u/.claude/references/notes/acme/checklist.md` (없음)") == true
+          && kprompts.first?.1.contains("$H domain-note --domain acme --init") == true
+          && kprompts.first?.1.contains("--source \"ACME-1\"") == true
+          && kprompts.first?.2.dirs.contains("/u/.claude/references/notes") == true, "notes: 역할 프롬프트에 공유 점검표·노트 안내, 노트 폴더는 읽기 폴더")
+    let review = defaults[.reviewer]!
+    check(review.tools.contains("Skill(domain-review)") && review.tools.contains("Skill(code-review)") && review.tools.contains("Bash(h domain-note:*)")
+          && review.dirs.contains("/refs") && defaults[.dev]!.dirs.contains("/refs") && defaults[.pm]!.tools.contains("Bash(h domain-note:*)")
+          && !defaults[.dev]!.tools.contains("Bash(h domain-note:*)") && !defaults[.tester]!.dirs.contains("/refs"),
+          "notes: 리뷰어는 domain-review 스킬과 domain-note, 개발은 읽기만, 테스터는 그대로")
+    var unsure = start
+    unsure.stage = .reviewer
+    unsure.testsPassed = true
+    let unsureOutcome = unsure.apply(role: .reviewer, next: PipelineNext(kind: .pm, note: "미확인 2건"), summary: "", now: Date())
+    check(unsureOutcome == .next && unsure.stage == .pm && unsure.reviewerBacks == 0 && unsure.note == "미확인 2건",
+          "pipeline: 리뷰어가 미확인만 있으면 PM 으로 (되돌림 횟수는 안 셈)")
 
     let bc = PipelineScript([.pm: [nextBlock("stop", #", "note": "프로젝트 단위 개발 건: 자동 처리 안 함""#)]])
     let bcState = await JiraPipeline.run(start, io: pipelineIO(bc), config: config)
@@ -1422,13 +1437,26 @@ do {
           && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"nope\"}\n```", map: map) == nil
           && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"default\"}\n```", map: map)?.domain == "default",
           "review: 도메인 블록 읽기 (없는 도메인은 거절, default 는 됨)")
-    let memo = DomainReview.memoFile("acme", local: URL(fileURLWithPath: "/r/local"))
-    let first = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, memo: memo, memoLines: 0, helper: "H", context: "본문")
-    let again = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .learned, firstRun: false, memo: memo, memoLines: 12, helper: "H", context: "본문")
-    check(memo.path == "/r/local/domains/acme.md" && DomainReview.sessionKey("acme") == "acme:reviewer"
-          && first.contains("세션 acme:reviewer") && first.contains("첫 실행") && first.contains("아직 없음") && first.hasSuffix("본문")
-          && again.contains("새로 필요한 것만") && again.contains("(12줄)") && again.contains("H gh-file --repo acme/sample-web")
-          && again.contains("H domain-note --domain acme") && again.contains("추측·미확인"), "review: 리뷰어 세션 안내 (첫 실행·이어 쓰기·메모·gh-file·domain-note)")
+    let present: [String: Int] = ["/n/acme/checklist.md": 20, "/n/acme/notes.md": 12]
+    let notes = DomainNotes(root: "/n", lines: { present[$0] })
+    let empty = DomainNotes(root: "/n", lines: { _ in nil })
+    let first = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, notes: empty, helper: "H", context: "본문")
+    let again = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .learned, firstRun: false, notes: notes, helper: "H", context: "본문")
+    let unsure = DomainReview.reviewPrompt(target: other, domain: "default", why: "못 정함", source: .chosen, firstRun: true, notes: notes, helper: "H", context: "본문")
+    check(DomainReview.sessionKey("acme") == "acme:reviewer"
+          && first.contains("세션 acme:reviewer") && first.contains("첫 실행") && first.contains("H domain-note --domain acme --init") && first.hasSuffix("본문")
+          && first.contains("`/n/acme/checklist.md` (없음)")
+          && again.contains("새로 필요한 것만") && again.contains("`/n/acme/checklist.md` (20줄)") && again.contains("`/n/acme/notes.md` (12줄)")
+          && !again.contains("--init") && again.contains("H gh-file --repo acme/sample-web")
+          && again.contains("H domain-note --domain acme --kind {용어집|업무 규칙|장애|함정|결정|동작} --source \"sample-web#2\"") && again.contains("직접 고치지 않는다")
+          && unsure.contains("도메인 미정, 점검표 없음") && !unsure.contains("domain-note")
+          && !notes.promptLines(domain: "acme", helper: "H", source: "ACME-1", canWrite: false).contains("domain-note")
+          && notes.promptLines(domain: "acme", helper: "H", source: "ACME-1", canWrite: false).contains("읽기만"),
+          "review: 리뷰어 세션 안내 (첫 실행·이어 쓰기·공유 노트·init·gh-file·domain-note·default)")
+    let rows = Data(#"[{"kind":"settings","id":"automation","domainNotesDir":"~/kb/notes"},{"id":"jira"}]"#.utf8)
+    check(DomainNotes.root(fromConnections: rows, home: "/u") == "/u/kb/notes" && DomainNotes.root(fromConnections: nil, home: "/u") == "/u/.claude/references/notes"
+          && DomainNotes.root(fromConnections: Data(#"[{"kind":"settings","id":"automation","domainNotesDir":" "}]"#.utf8), home: "/u") == "/u/.claude/references/notes",
+          "notes: 노트 폴더는 automation 설정 domainNotesDir, 없으면 ~/.claude/references/notes")
 }
 
 print("passed: \(passed), failed: \(failures)")

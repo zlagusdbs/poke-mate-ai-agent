@@ -604,14 +604,54 @@ def test_gh_file_reads_only_review_repo(env, monkeypatch, capsys):
     assert run("gh-file", "--repo", "acme/other", "--ref", "abc", "--path", "a.js") == 0
 
 
-def test_domain_note_appends_once(env, capsys):
-    from pokemate.connections import local_dir
-    assert run("domain-note", "--domain", "acme", "--source", "sample-web#1", "--text", "쿠폰함은  제외 상품을 숨긴다 (근거: a.js)") == 0
-    assert run("domain-note", "--domain", "acme", "--source", "sample-web#2", "--text", "쿠폰함은 제외 상품을 숨긴다 (근거: a.js)") == 0
+def test_domain_note_appends_once(env, capsys, tmp_path):
+    note = ("domain-note", "--domain", "acme", "--kind", "동작")
+    assert run(*note, "--source", "sample-web#1", "--text", "쿠폰함은  제외 상품을 숨긴다 (근거: a.js)") == 0
     out = capsys.readouterr().out
-    assert "skipped" in out
-    text = (local_dir() / "domains" / "acme.md").read_text(encoding="utf-8")
-    assert text.startswith("# acme 도메인 메모") and text.count("- 쿠폰함은 제외 상품을 숨긴다") == 1 and "출처: sample-web#1" in text
-    for bad in ("../x", "a/b", "a:b"):
+    folder = tmp_path / "notes" / "acme"
+    assert "created" in out and "checklist.md·notes.md" in out
+    assert (folder / "checklist.md").read_text(encoding="utf-8").startswith("# acme — 점검표 (초안, 사람 확인 전)")
+    assert run(*note, "--source", "sample-web#2", "--text", "쿠폰함은 제외 상품을 숨긴다 (근거: a.js)") == 0
+    out = capsys.readouterr().out
+    assert "skipped" in out and "created" not in out
+    lines = (folder / "notes.md").read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "# acme — 확인한 사실" and lines[-1].startswith("- 쿠폰함은 제외 상품을 숨긴다 (근거: a.js) (출처: sample-web#1, ")
+    assert sum(1 for line in lines if line.startswith("- 쿠폰함은")) == 1
+    for bad in ("../x", "a/b", "a:b", "default"):
         with pytest.raises(SystemExit):
-            run("domain-note", "--domain", bad, "--source", "s", "--text", "t")
+            run("domain-note", "--domain", bad, "--kind", "동작", "--source", "s", "--text", "t")
+    with pytest.raises(SystemExit):
+        run("domain-note", "--domain", "acme", "--kind", "기타", "--source", "s", "--text", "t")
+    with pytest.raises(SystemExit):
+        run("domain-note", "--domain", "acme", "--source", "s", "--text", "t")
+
+
+def test_domain_note_goes_under_its_kind(env, capsys, tmp_path):
+    for kind, text in (("용어집", "쿠폰함 = coupon box"), ("동작", "두 번째 동작"), ("용어집", "할인 = discount"), ("함정", "캐시가 4시간 남는다")):
+        assert run("domain-note", "--domain", "acme", "--kind", kind, "--source", "ACME-1", "--text", text) == 0
+    lines = (tmp_path / "notes" / "acme" / "notes.md").read_text(encoding="utf-8").splitlines()
+    heads = {line.split(" (")[0][3:]: i for i, line in enumerate(lines) if line.startswith("## ")}
+    at = {t: i for i, line in enumerate(lines) for t in ("쿠폰함 = coupon box", "할인 = discount", "두 번째 동작", "캐시가 4시간 남는다") if line.startswith(f"- {t} (")}
+    assert heads["용어집"] < at["쿠폰함 = coupon box"] < at["할인 = discount"] < heads["업무 규칙"]
+    assert heads["함정"] < at["캐시가 4시간 남는다"] < heads["결정"] and heads["동작"] < at["두 번째 동작"]
+    assert lines[at["할인 = discount"] + 1] == "" and lines[at["캐시가 4시간 남는다"] + 1] == ""
+
+
+def test_domain_note_keeps_existing_notes_and_init(env, capsys, tmp_path, monkeypatch):
+    root = tmp_path / "custom-notes"
+    monkeypatch.delenv("POKEMATE_NOTES_DIR")
+    (root / "acme").mkdir(parents=True)
+    (root / "acme" / "checklist.md").write_text("# 사람이 쓴 점검표\n", encoding="utf-8")
+    (root / "acme" / "notes.md").write_text("# acme\n\n## 동작\n- 예전 사실 (출처: x, 2026-01-01)\n", encoding="utf-8")
+    monkeypatch.setattr(automation, "settings", lambda: {"domainNotesDir": str(root)})
+    assert run("domain-note", "--domain", "acme", "--kind", "결정", "--source", "ACME-2", "--text", "새 결정") == 0
+    text = (root / "acme" / "notes.md").read_text(encoding="utf-8")
+    assert "created" not in capsys.readouterr().out and (root / "acme" / "checklist.md").read_text(encoding="utf-8") == "# 사람이 쓴 점검표\n"
+    assert text.index("- 예전 사실") < text.index("## 결정") < text.index("- 새 결정")
+    assert run("domain-note", "--domain", "sample-new", "--init") == 0
+    assert "created" in capsys.readouterr().out and (root / "sample-new" / "notes.md").exists()
+    with pytest.raises(SystemExit):
+        run("domain-note", "--domain", "acme")
+    monkeypatch.setattr(automation, "settings", lambda: {})
+    monkeypatch.setenv("POKEMATE_TRIAL", str(tmp_path / "trial"))
+    assert automation.notes_root() == tmp_path / "trial" / "notes"

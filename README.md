@@ -136,9 +136,9 @@ deny 에 있는 것은 승인 카드 없이 거부한다. 고친 내용은 다�
 GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + 작업 세션)은 기본으로 "도메인 리뷰어 세션으로 리뷰"가 켜져 있다. 레포 이름 세션이 아니라 도메인의 리뷰어 세션(`{도메인}:reviewer`, Jira 역할별 처리의 리뷰어와 같은 세션)에서 리뷰해 지식이 한곳에 쌓인다.
 
 1. **도메인 정하기**: PR 레포가 `local/domains.json` 의 `repos` 에 있으면 그 도메인. 없으면 예전에 정한 기록(`automation/state/review-domains.json`)을 쓰고, 그것도 없으면 PR 제목·본문·바뀐 파일·연결 Jira 를 도메인마다 적은 `description`·`keywords` 와 비교해 정하는 읽기 전용 실행을 한 번 돌린다. 어디에도 맞지 않으면 `default`. 정한 도메인과 이유는 리뷰 본문 "확인한 범위"와 시작 알림, 작업 탭에 보인다. 잘못 정했으면 `domains.json` 의 `repos` 에 넣거나 기록 파일에서 그 줄을 지운다.
-2. **세션**: 처음이면 그 도메인의 지식 저장소 목차와 도메인 메모를 읽어 요약한 뒤 리뷰하고, 이어 쓰면 새로 필요한 것만 읽는다. 같은 도메인의 Jira 역할별 처리와 차례(큐)를 같이 쓴다. 기다리는 건은 작업 탭 도메인 줄의 "대기 n"(마우스를 올리면 목록)에 보인다.
-3. **도메인 메모**: `local/domains/{도메인}.md`. 리뷰·처리 중 코드·문서로 직접 확인한 도메인 사실만 근거와 함께 `pokemate auto domain-note` 로 한 줄씩 남긴다(추측·미확인은 남기지 않음). 같은 도메인 세션들이 처음에 읽고, 이후 키워드로 찾아 쓴다.
-4. **지식과 승인**: 리뷰 전에 지식 저장소·위키·연결 Jira 를 읽고 "참고한 근거"를 적는다. 스킬 후보는 결함·결함 아님·미확인으로 나누고, 미확인이 하나라도 있으면 승인하지 않고 질문을 담은 댓글 리뷰로 올린다.
+2. **세션**: 처음이면 domain-review 스킬 1절대로 지식을 읽은 뒤 리뷰하고, 이어 쓰면 새로 필요한 것만 읽는다. 같은 도메인의 Jira 역할별 처리와 차례(큐)를 같이 쓴다. 기다리는 건은 작업 탭 도메인 줄의 "대기 n"(마우스를 올리면 목록)에 보인다.
+3. **도메인 노트 (데스크톱과 같이 쓴다)**: 노트 폴더(기본 `~/.claude/references/notes`, 설정 `domainNotesDir`) 아래 `{도메인}/checklist.md`(그 도메인을 건드릴 때 반드시 답할 질문, 사람이 확정)와 `{도메인}/notes.md`(코드·문서로 확인한 사실, 종류별 절: 용어집·업무 규칙·장애·함정·결정·동작). 자동 실행은 이 폴더를 읽기만 하고, 쓰기는 `pokemate auto domain-note --kind …` 로만 한다(파일 직접 편집은 막힌다). 도메인 폴더가 없으면 helper 가 빈 틀을 만들고 결과·알림에 "점검표가 아직 없음"을 남긴다. 쓰는 규칙은 노트 폴더의 `README.md`.
+4. **리뷰 절차는 스킬이 원본**: 판단(깊이 → 지식 읽기 → 코드 읽기 → 점검표 답하기 → 후보 분류 → 판정 → 결과 문서 → 노트)은 홈의 `domain-review` 스킬(`~/.claude/skills/domain-review`)을 그대로 따른다. 데스크톱에서 리뷰할 때와 같은 스킬이다. 프롬프트(`github-review`·`jira-reviewer`)는 PokeMate 고유 단계(확인·알림·`gh-review` 등록·`review-state`, 명령 사용법, 결함 기준 보충)만 정한다. 결함이나 미확인이 하나라도 있으면 승인하지 않고 질문을 담은 댓글 리뷰로 올린다. 스킬은 앱이 홈 스킬을 작업 폴더에 연결할 때(실행마다) 같이 연결되고, 허용 목록에 `Skill(domain-review)` 가 있어야 한다.
 5. **로컬 레포가 없을 때**: `pokemate auto gh-file --repo … --ref … --path …` 로 PR 저장소 파일을 읽는다(읽기 전용, 리뷰 중에는 그 PR 저장소만).
 
 ### 역할별 처리 (Jira)
@@ -146,10 +146,10 @@ GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + �
 트리거 알람에서 "레포별 작업 세션 이어 쓰기" 아래 "역할별 세션으로 나눠 처리"를 켜면, 레포 세션 하나가 다 하던 Jira 처리를 역할 세션 4개(PM·개발·테스터·리뷰어)가 나눠 맡는다.
 
 1. **도메인**: 레포 정하기 결과 레포를 `local/domains.json`(예: `{"acme": {"repos": ["acme-sample-service", "acme-sample-web"], "knowledge": ["acme-kb", "~/.claude/references/acme-wiki"]}, "default": {"knowledge": ["acme-kb"]}}`)으로 도메인에 묶는다. `knowledge` 는 지식 모으기 때 읽는 읽기 전용 지식 저장소(`~/Workspace` 아래 폴더 이름 또는 경로)로, 프롬프트의 `{{knowledge}}` 자리에 들어가고 역할 세션의 읽기 폴더에 더해진다. 도메인에 `knowledge` 가 없으면 `default` 를 쓴다(역할별 처리를 끈 `jira.md` 도 같은 값). 어느 도메인에도 없으면 레포 이름이 도메인이다. 역할 세션은 `sessions.json` 에 `{도메인}:{역할}` 키로 남고, 같은 도메인은 한 번에 티켓 하나씩 처리한다.
-2. **흐름 (Story)**: PM(확인·지식 모으기·계획 댓글·레포·브랜치·개발 지시서) → PokeMate(`create-branch`·`worktree-add`) → 개발(W 안에서 코드·테스트) → 테스터(`run-tests` 와 완료 조건 대조, 테스트를 쓰지 않음) → PM(통과 확인) → 리뷰어(W 의 변경을 `/code-review high` 로 리뷰하고 결함 기준으로 거름) → PokeMate(`commit-push`) → PM(In Review·결과 댓글·알림). Task(운영 건)는 PM 하나로 끝낸다. Jira 댓글은 PM 만 쓴다.
+2. **흐름 (Story)**: PM(확인·지식 모으기·계획 댓글·레포·브랜치·개발 지시서) → PokeMate(`create-branch`·`worktree-add`) → 개발(W 안에서 코드·테스트) → 테스터(`run-tests` 와 완료 조건 대조, 테스트를 쓰지 않음) → PM(통과 확인) → 리뷰어(W 의 변경을 `domain-review` 스킬로 리뷰. 승인이면 push, 결함이면 개발, 미확인만 있으면 PM) → PokeMate(`commit-push`) → PM(In Review·결과 댓글·노트 남기기·알림). PM 은 계획 댓글 전에 도메인 점검표에 답하고 미확인이 있으면 확인 필요로 멈춘다. 개발은 바꾼 코드를 지시서의 점검표 답과 다시 대조한다. Task(운영 건)는 PM 하나로 끝낸다. Jira 댓글은 PM 만 쓴다.
 3. **넘기기**: 역할끼리는 말을 못 하므로 각 역할은 답 끝에 `pokemate-next` 블록(`{"next": "tester|dev|pm|reviewer|push|stop", "note": "…"}`)을 붙이고, 앱이 읽어 다음 역할 세션을 `--resume` 으로 부른다. 앞 단계의 note·답 요약과 PM 개발 지시서가 다음 역할 프롬프트에 붙는다. 블록이 없거나 깨지거나 그 역할에 허용되지 않은 next 면 멈추고 blocked 알림을 보낸다.
 4. **되돌림 상한**: 테스터→개발 2번, 리뷰어→개발 2번. 넘으면 PM 이 확인 필요(또는 개발 중단) 댓글을 남기고 멈춘다. 확인 필요 답이 달리면 PM 부터 다시 시작한다(되돌림 0).
-5. **권한**: 역할마다 `--tools`·허용 명령을 따로 준다(`local/pipeline-tools.json`, 없으면 기본값으로 만든다). PM 은 Jira 읽기·쓰기·알림·git-read, 개발은 W 안 Edit/Write·run-tests·git-read, 테스터는 run-tests·git-read, 리뷰어는 `Skill(code-review)`·git-read. `commit-push`·`create-branch`·`worktree-add` 는 어떤 역할에도 주지 않고 앱이 직접 실행한다.
+5. **권한**: 역할마다 `--tools`·허용 명령을 따로 준다(`local/pipeline-tools.json`, 없으면 기본값으로 만든다). PM 은 Jira 읽기·쓰기·알림·git-read, 개발은 W 안 Edit/Write·run-tests·git-read, 테스터는 run-tests·git-read, 리뷰어는 `Skill(domain-review)`·`Skill(code-review)`·git-read·domain-note. PM 도 domain-note 를 쓴다. 노트 폴더는 PM·개발·리뷰어의 읽기 폴더에 앱이 더한다. `commit-push`·`create-branch`·`worktree-add` 는 어떤 역할에도 주지 않고 앱이 직접 실행한다.
 6. **프롬프트**: `local/prompts/`(없으면 `shared/prompts/`)의 `jira-common`(공통 명령·규칙)과 `jira-pm`·`jira-dev`·`jira-tester`·`jira-reviewer`. `{{helper}}` 는 helper 명령으로 바뀐다.
 7. **진행 상태**: 티켓마다 `automation/pipelines/{KEY}.json`(지금 단계, 되돌림 횟수, 레포·브랜치·W, 역할별 비용, 지나온 단계)에 남겨 앱을 다시 켜도 이어 간다. "작업" 탭은 도메인마다 역할 4줄과 지금 단계(예: `ACME-101 · tester 2/2`)를 보여 준다.
 
@@ -180,13 +180,13 @@ uv --directory <저장소>/mcp-server run --quiet pokemate auto <하위명령> [
 | `commit-push` | worktree 의 `feature/` 브랜치에 커밋·push (메시지는 `feat:` 등 한 줄, Jira 키·Co-Authored-By 거절, force 없음) |
 | `gh-get` · `gh-diff` | GitHub 조회 |
 | `gh-file` | PR 저장소 파일 내용 읽기 (읽기 전용, 리뷰 중에는 그 PR 저장소만) |
-| `domain-note` | 도메인 메모(`local/domains/{도메인}.md`)에 코드·문서로 확인한 사실 한 줄 추가 (같은 줄은 건너뜀) |
+| `domain-note` | 도메인 노트(`{노트 폴더}/{도메인}/notes.md`)의 `--kind` 절(용어집·업무 규칙·장애·함정·결정·동작)에 확인한 사실 한 줄 추가 (같은 줄은 건너뜀, 300줄 넘으면 알림). 도메인 폴더가 없으면 `checklist.md`·`notes.md` 빈 틀을 만든다(`--init` 은 틀만). `default` 는 거절 |
 | `gh-review` | 리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절) |
 | `deploy-approve` | 내가 승인자인 승인 대기 배포를 승인 (`--id` 한 건만, `--dry-run` 대상만 출력). 내가 만든 배포는 건너뛰고, 승인되면 배포 시스템이 배치를 시작한다. 결과 JSON, 활동 기록에 남김 |
 | `write-note` | 댓글·리뷰 본문 파일 쓰기 |
 | `jira-state` · `review-state` | 처리 결과 저장 (다시 처리하지 않게). `jira-state --waiting` 은 "확인 필요" 답을 기다리는 표시 |
 
-- 설정: `local/connections.json` 에 `"kind": "settings", "id": "automation"` 항목을 둔다. Jira 상태 이름(`transitions`: `start`·`done`), 레포별 테스트 명령(`testCommands`), GitHub 사용자(`githubUser`, 비우면 `gh api user`), 작업 폴더(`workDir`), 근무 캘린더 주소·이름, 공휴일 국가, 공수 기록용 반복 티켓 제목(`recurringTitles`). GitHub 호스트와 Jira 주소는 같은 파일의 `github`·`jira` 항목 `baseUrl` 에서 읽고, Jira 는 연결 메뉴에서 연결한 계정(키체인)으로 직접 부른다. 예시는 `connections.example.json`.
+- 설정: `local/connections.json` 에 `"kind": "settings", "id": "automation"` 항목을 둔다. Jira 상태 이름(`transitions`: `start`·`done`), 레포별 테스트 명령(`testCommands`), GitHub 사용자(`githubUser`, 비우면 `gh api user`), 작업 폴더(`workDir`), 근무 캘린더 주소·이름, 공휴일 국가, 공수 기록용 반복 티켓 제목(`recurringTitles`), 도메인 노트 폴더(`domainNotesDir`, 기본 `~/.claude/references/notes`. 시험 모드(`POKEMATE_TRIAL`)에서는 시험 폴더의 `notes/`). GitHub 호스트와 Jira 주소는 같은 파일의 `github`·`jira` 항목 `baseUrl` 에서 읽고, Jira 는 연결 메뉴에서 연결한 계정(키체인)으로 직접 부른다. 예시는 `connections.example.json`.
 - 데이터: `~/Library/Application Support/poke-mate/automation/` 아래 `state/`(처리 상태), `logs/`(Claude 실행 로그), `notes/`(본문 파일), `activity/`(월별 활동 기록 jsonl).
 - Teams 웹훅 주소: 데이터 폴더 `teams-webhook-url` (권한 600). 이 파일은 열거나 출력하지 않는다.
 

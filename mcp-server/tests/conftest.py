@@ -29,5 +29,6 @@ def isolated_storage(tmp_path, monkeypatch):
     keyring.set_keyring(MemoryKeyring())
     monkeypatch.setenv("POKEMATE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("POKEMATE_LOCAL_DIR", str(tmp_path / "local"))
+    monkeypatch.setenv("POKEMATE_NOTES_DIR", str(tmp_path / "notes"))
     yield
     keyring.set_keyring(previous)

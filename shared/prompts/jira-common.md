@@ -13,7 +13,7 @@
 - 명령은 한 번에 하나씩, 전체 명령을 그대로 쓴다. `H=...` 같은 셸 변수, `cd ...;`, `&&`·`;` 로 잇기는 막힌다.
 - Jira 읽기 (JSON): `$H jira-get --key {KEY}`, `$H jira-search --jql "..."`, `$H jira-comments --key {KEY}`, `$H jira-links --key {KEY}`
 - git 조회: `$H git-read --repo {레포폴더} -- {fetch|show|log|diff|branch -r ...|symbolic-ref|rev-parse|ls-tree|grep|ls-remote}`
-- 코드·문서 읽기: Read·Grep·Glob (작업 폴더 아래)
+- 코드·문서 읽기: Read·Grep·Glob (작업 폴더, 지식 저장소, 도메인 노트 폴더 아래)
 - 테스트: `$H run-tests --worktree {W}` → JSON(ok, passed, failed, tail). 실패면 종료 코드 1.
 - Jira 상태: `$H jira-transition --key {KEY} --to start` (In Progress), `--to done` (In Review)
 - 댓글 본문 파일: `$H write-note --name {KEY}-{plan|question|result}.md --text "..."` → 출력된 경로
