@@ -25,6 +25,13 @@ final class WorkSessionCenter: ObservableObject {
         book.applyTranscript(repo: repo, usage: total.usage, lastContext: total.lastContext)
     }
 
+    func reuseSession(_ key: String) -> String? {
+        let before = book.sessions[key]
+        let id = book.reuseId(key, policy: SessionReuse(settings: AppPaths.loadSettings()), now: Date())
+        if book.sessions[key] != before { save() }
+        return id
+    }
+
     func refreshAllUsage() {
         for repo in book.sessions.keys { refreshUsage(repo) }
         save()
@@ -196,7 +203,7 @@ final class WorkSessionCenter: ObservableObject {
         if let i = queued[repo]?.firstIndex(of: key) { queued[repo]?.remove(at: i) }
         if queued[repo]?.isEmpty == true { queued[repo] = nil }
         running[repo] = key
-        let sessionId = book.resumeId(repo)
+        let sessionId = reuseSession(repo)
         var prompt = book.sessions[repo] == nil ? (takeSummary(repo).map { "## 이전 작업 세션 요약 (\(repo))\n\($0)\n\n" } ?? "") : prefix(for: repo)
         if sessionId != nil { prompt += Self.resumeNote + "\n\n" }
         let domains = DomainMap.load()
@@ -387,7 +394,7 @@ extension WorkSessionCenter {
             },
             helper: { args in await Self.runHelper(args, settings: settings) },
             diff: { worktree in await Self.worktreeDiff(worktree) },
-            sessionId: { [weak self] key in await self?.book.resumeId(key) },
+            sessionId: { [weak self] key in await self?.reuseSession(key) },
             recordSession: { [weak self] sessionKey, id, ticket, usage in
                 await self?.recordRoleSession(sessionKey, id: id, ticket: ticket, usage: usage)
             },
@@ -507,7 +514,7 @@ extension WorkSessionCenter {
         running[domain] = label
         reviewing[domain] = "\(label) · \(why)"
         let key = DomainReview.sessionKey(domain)
-        let sessionId = book.resumeId(key)
+        let sessionId = reuseSession(key)
         let map = DomainMap.load()
         let notes = DomainNotes.load()
         var runAccess = access

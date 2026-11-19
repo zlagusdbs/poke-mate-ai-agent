@@ -1527,5 +1527,51 @@ do {
           && ["/ws", "/refs", "/n", "/w/W"].allSatisfy(raccess.dirs.contains), "eval: 가상 레포 리뷰어는 읽기·스킬만, 쓰기 없음")
 }
 
+do {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    var rbook = WorkSessionBook()
+    rbook.record(repo: "acme:reviewer", sessionId: "s1", key: "ACME-1", usage: nil, now: t0)
+    rbook.sessions["acme:reviewer"]?.contextTokens = 90_000
+    let policy = SessionReuse()
+    check(policy.idleMinutes == 55 && policy.maxTokens == 120_000, "reuse: 기본 55분·120k")
+    check(rbook.reuseId("acme:reviewer", policy: policy, now: t0.addingTimeInterval(54 * 60)) == "s1" && rbook.archived.isEmpty,
+          "reuse: 55분 안·문맥 상한 아래면 이어 씀")
+    var idle = rbook
+    check(idle.reuseId("acme:reviewer", policy: policy, now: t0.addingTimeInterval(61 * 60)) == nil
+          && idle.sessions["acme:reviewer"]?.id == "" && idle.sessions["acme:reviewer"]?.freshReason == "식음 61분 (기준 55분)"
+          && idle.archived.map(\.id) == ["s1"], "reuse: 55분 넘게 쉬면 새 세션, 옛 세션은 보관, 이유 남김")
+    idle.record(repo: "acme:reviewer", sessionId: "s2", key: "ACME-2", usage: nil, now: t0.addingTimeInterval(62 * 60))
+    check(idle.sessions["acme:reviewer"]?.id == "s2" && idle.sessions["acme:reviewer"]?.freshReason == "식음 61분 (기준 55분)"
+          && idle.sessions["acme:reviewer"]?.keys == ["ACME-2"] && idle.archived.count == 1, "reuse: 새 세션 기록에 이유가 이어짐")
+    var big = rbook
+    big.sessions["acme:reviewer"]?.contextTokens = 130_000
+    check(big.reuseId("acme:reviewer", policy: policy, now: t0.addingTimeInterval(60)) == nil
+          && big.sessions["acme:reviewer"]?.freshReason?.hasPrefix("문맥 ") == true, "reuse: 문맥이 상한 이상이면 새 세션")
+    var keep = rbook
+    keep.sessions["acme:reviewer"]?.contextTokens = 130_000
+    check(keep.reuseId("acme:reviewer", policy: .always, now: t0.addingTimeInterval(9 * 3600)) == "s1"
+          && SessionReuse(idleMinutes: 0, maxTokens: 120_000).freshReason(for: rbook.sessions["acme:reviewer"]!, now: t0.addingTimeInterval(9 * 3600)) == nil,
+          "reuse: 0 이면 그 기준은 끔 (둘 다 0 이면 늘 이어 쓰기)")
+    var empty = WorkSessionBook()
+    check(empty.reuseId("nope", policy: policy, now: t0) == nil && empty.sessions.isEmpty, "reuse: 세션이 없으면 그대로 새로")
+    let oldSettings = try? JSONDecoder().decode(AppSettings.self, from: Data(#"{"repoDir": "/r"}"#.utf8))
+    let setSettings = try? JSONDecoder().decode(AppSettings.self, from: Data(#"{"sessionReuseMinutes": 0, "sessionReuseMaxTokens": -5}"#.utf8))
+    check(oldSettings?.sessionReuseMinutes == 55 && oldSettings?.sessionReuseMaxTokens == 120_000
+          && setSettings.map { SessionReuse(settings: $0) } == SessionReuse(idleMinutes: 0, maxTokens: 0), "reuse: 설정 기본값과 0(끔)")
+    check(ReviewEval.policy("always") == .always && ReviewEval.policy("default") == SessionReuse() && ReviewEval.policy("30,80000") == SessionReuse(idleMinutes: 30, maxTokens: 80_000)
+          && ReviewEval.policy("x") == nil && ReviewEval.policy("-1,5") == nil && ReviewEval.newLines("a\nb\nc", after: 2) == "c",
+          "eval: 세션 이어 쓰기 규칙 인자, 이번 실행에 생긴 기록만")
+    var ebook = WorkSessionBook()
+    let et = Date(timeIntervalSince1970: 1_800_000_000)
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "bad", ok: false, caseId: "c1", usage: nil, transcript: nil, now: et)
+    check(ebook.sessions.isEmpty && ebook.reuseId("acme:reviewer", policy: .always, now: et) == nil, "eval: 실패한 실행은 세션을 기록하지 않음 (다음 문제는 새로)")
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "s1", ok: true, caseId: "c2", usage: nil,
+                             transcript: (RunUsage(input: 1, cacheRead: 95_000), 96_000), now: et)
+    check(ebook.sessions["acme:reviewer"]?.contextTokens == 96_000 && ebook.reuseId("acme:reviewer", policy: SessionReuse(), now: et.addingTimeInterval(60)) == "s1",
+          "eval: 성공한 실행은 기록하고 끝 문맥으로 다음 판단")
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "s1", ok: false, caseId: "c3", usage: nil, transcript: nil, now: et.addingTimeInterval(120))
+    check(ebook.sessions["acme:reviewer"]?.keys == ["c2"], "eval: 이어 쓰다 실패해도 기록을 바꾸지 않음")
+}
+
 print("passed: \(passed), failed: \(failures)")
 exit(failures == 0 ? 0 : 1)

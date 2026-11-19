@@ -60,6 +60,7 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
     public var usage: RunUsage
     public var summaryFrom: String?
     public var contextAlerted: Bool?
+    public var freshReason: String?
 
     public init(id: String, repo: String, now: Date, summaryFrom: String? = nil) {
         self.id = id
@@ -77,6 +78,36 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
     public var contextPercent: Int? {
         guard let window = contextWindow, window > 0 else { return nil }
         return min(100, contextTokens * 100 / window)
+    }
+}
+
+public struct SessionReuse: Equatable, Sendable {
+    public static let defaultMinutes = 55
+    public static let defaultTokens = 120_000
+
+    public var idleMinutes: Int
+    public var maxTokens: Int
+
+    public init(idleMinutes: Int = SessionReuse.defaultMinutes, maxTokens: Int = SessionReuse.defaultTokens) {
+        self.idleMinutes = idleMinutes
+        self.maxTokens = maxTokens
+    }
+
+    public init(settings: AppSettings) {
+        self.init(idleMinutes: settings.sessionReuseMinutes, maxTokens: settings.sessionReuseMaxTokens)
+    }
+
+    public static let always = SessionReuse(idleMinutes: 0, maxTokens: 0)
+
+    public func freshReason(for session: WorkSession, now: Date) -> String? {
+        let idle = Int(now.timeIntervalSince(session.lastUsed) / 60)
+        if idleMinutes > 0 && idle >= idleMinutes {
+            return "식음 \(idle)분 (기준 \(idleMinutes)분)"
+        }
+        if maxTokens > 0 && session.contextTokens >= maxTokens {
+            return "문맥 \(TokenFormat.compact(session.contextTokens)) (기준 \(TokenFormat.compact(maxTokens)))"
+        }
+        return nil
     }
 }
 
@@ -117,6 +148,16 @@ public struct WorkSessionBook: Codable, Equatable, Sendable {
             s.contextAlerted = nil
             sessions[repo] = s
         }
+        return nil
+    }
+
+    public mutating func reuseId(_ repo: String, policy: SessionReuse, now: Date) -> String? {
+        guard let s = sessions[repo], !s.id.isEmpty else { return nil }
+        guard let reason = policy.freshReason(for: s, now: now) else { return s.id }
+        archived.append(s)
+        var fresh = WorkSession(id: "", repo: repo, now: now)
+        fresh.freshReason = reason
+        sessions[repo] = fresh
         return nil
     }
 

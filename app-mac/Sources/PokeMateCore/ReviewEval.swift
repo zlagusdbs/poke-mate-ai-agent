@@ -79,10 +79,10 @@ public enum ReviewEval {
     }
 
     public static func prompt(item: ReviewEvalCase, target: ReviewTarget, domain: String, why: String, source: DomainReview.Source,
-                              notes: DomainNotes, helper: String, template: String, knowledge: String) -> String {
+                              notes: DomainNotes, helper: String, template: String, knowledge: String, firstRun: Bool = true) -> String {
         let event = "다음 이벤트가 생겼다.\n- [리뷰 요청] \(target.label)\n- 평가 문제 \(item.id)\n- 링크: \(item.url)"
         let body = template.replacingOccurrences(of: DomainMap.placeholder, with: knowledge).replacingOccurrences(of: "{{helper}}", with: helper)
-        return DomainReview.reviewPrompt(target: target, domain: domain, why: why, source: source, firstRun: true, notes: notes, helper: helper,
+        return DomainReview.reviewPrompt(target: target, domain: domain, why: why, source: source, firstRun: firstRun, notes: notes, helper: helper,
                                          context: "\(event)\n\n요청: \(body)\n\n\(tail)")
     }
 
@@ -138,6 +138,27 @@ public enum ReviewEval {
         return access
     }
 
+    public static func policy(_ text: String) -> SessionReuse? {
+        switch text {
+        case "always": return .always
+        case "default": return SessionReuse()
+        default:
+            let parts = text.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            return parts.count == 2 && parts.allSatisfy { $0 >= 0 } ? SessionReuse(idleMinutes: parts[0], maxTokens: parts[1]) : nil
+        }
+    }
+
+    public static func recordSession(_ book: inout WorkSessionBook, key: String, sessionId: String, ok: Bool, caseId: String,
+                                     usage: RunUsage?, transcript: (usage: RunUsage, lastContext: Int)?, now: Date) {
+        guard ok else { return }
+        book.record(repo: key, sessionId: sessionId, key: caseId, usage: usage, now: now)
+        if let transcript { book.applyTranscript(repo: key, usage: transcript.usage, lastContext: transcript.lastContext) }
+    }
+
+    public static func newLines(_ transcript: String, after count: Int) -> String {
+        transcript.split(separator: "\n", omittingEmptySubsequences: false).dropFirst(count).joined(separator: "\n")
+    }
+
     public static func skillsUsed(transcript: String) -> [String] {
         var names: [String] = []
         for line in transcript.split(separator: "\n") {
@@ -158,8 +179,10 @@ public enum ReviewEval {
     }
 
     public static func meta(costUSD: Double, seconds: Double, skills: [String], sessionId: String, usage: RunUsage?, ok: Bool,
-                            domain: String) -> [String: Any] {
-        var row: [String: Any] = ["costUSD": costUSD, "seconds": seconds, "skills": skills, "sessionId": sessionId, "ok": ok, "domain": domain]
+                            domain: String, resumed: Bool = false, freshReason: String? = nil, contextAfter: Int? = nil) -> [String: Any] {
+        var row: [String: Any] = ["costUSD": costUSD, "seconds": seconds, "skills": skills, "sessionId": sessionId, "ok": ok, "domain": domain, "resumed": resumed]
+        if let freshReason { row["freshReason"] = freshReason }
+        if let contextAfter { row["contextAfter"] = contextAfter }
         if let usage {
             row["input"] = usage.input
             row["output"] = usage.output

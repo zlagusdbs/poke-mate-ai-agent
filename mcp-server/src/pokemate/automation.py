@@ -1043,6 +1043,14 @@ def eval_score_case(case, text):
             "sections": sorted(sec), "pass": not missed and not bad and verdict is not None}
 
 
+def eval_session_text(row):
+    if "resumed" not in row:
+        return "-"
+    if row["resumed"]:
+        return "이어 쓰기"
+    return "새로" + (f" ({row['freshReason']})" if row.get("freshReason") else "")
+
+
 def cmd_eval_score(args):
     with open(os.path.expanduser(args.cases), encoding="utf-8") as f:
         cases = json.load(f)
@@ -1064,7 +1072,7 @@ def cmd_eval_score(args):
             score = eval_score_case(case, f.read())
         rows.append({"id": case["id"], "result": path, **meta, **score})
     label = args.label or os.path.basename(results.rstrip("/"))
-    head = ["문제", "통과", "판정", "깊이", "맞힘", "놓침", "위반", "비용", "시간", "스킬", "결과 원문"]
+    head = ["문제", "통과", "판정", "깊이", "맞힘", "놓침", "위반", "비용", "시간", "세션", "끝 문맥", "스킬", "결과 원문"]
     lines = [f"# 리뷰 기준 문제 채점 · {label}", "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     for r in rows:
         total = len(r.get("found", [])) + len(r.get("missed", []))
@@ -1072,6 +1080,7 @@ def cmd_eval_score(args):
                  f"{len(r.get('found', []))}/{total}", ", ".join(r.get("missed", [])) or "-", ", ".join(r.get("violations", [])) or "-",
                  f"${r['costUSD']:.2f}" if isinstance(r.get("costUSD"), (int, float)) else "-",
                  f"{r['seconds'] / 60:.1f}분" if isinstance(r.get("seconds"), (int, float)) else "-",
+                 eval_session_text(r), f"{r['contextAfter'] // 1000}k" if isinstance(r.get("contextAfter"), int) else "-",
                  ",".join(r.get("skills") or []) or "-", r.get("result") or "-"]
         lines.append("| " + " | ".join(str(c).replace("|", "/") for c in cells) + " |")
     passed = sum(1 for r in rows if r.get("pass"))

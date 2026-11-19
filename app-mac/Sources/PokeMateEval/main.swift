@@ -6,13 +6,21 @@ var rest = Array(CommandLine.arguments.dropFirst())
 var only: [String] = []
 var outDir: URL?
 var casesFile = URL(fileURLWithPath: settings.repoDir).appendingPathComponent("local/eval/reviews.json")
+var reuse: SessionReuse?
 while !rest.isEmpty {
     let arg = rest.removeFirst()
     switch arg {
     case "--case": if !rest.isEmpty { only.append(rest.removeFirst()) }
     case "--out": if !rest.isEmpty { outDir = URL(fileURLWithPath: rest.removeFirst()) }
+    case "--reuse":
+        guard !rest.isEmpty, let policy = ReviewEval.policy(rest.removeFirst()) else {
+            print("--reuse 는 always | default | 분,토큰 (예: 55,120000)")
+            exit(2)
+        }
+        reuse = policy
     case "-h", "--help":
-        print("usage: PokeMateEval [cases.json] [--case id]... [--out 결과 폴더]")
+        print("usage: PokeMateEval [cases.json] [--case id]... [--out 결과 폴더] [--reuse always|default|분,토큰]")
+        print("  --reuse 를 주면 문제를 차례로 돌리며 실제처럼 {도메인}:reviewer 세션을 그 규칙으로 이어 쓴다. 없으면 문제마다 새 세션")
         exit(0)
     default: casesFile = URL(fileURLWithPath: arg)
     }
@@ -50,6 +58,8 @@ let map = DomainMap.load()
 let book = ReviewDomainBook.load()
 let notes = DomainNotes.load()
 let home = NSHomeDirectory()
+let bookFile = out.appendingPathComponent("sessions.json")
+var sessions = WorkSessionBook.load(from: bookFile)
 line("문제 \(cases.count)개 · 프롬프트 \(templateFile.path) · 결과 \(out.path)")
 
 func git(_ args: [String]) async -> (ok: Bool, out: String) {
@@ -94,7 +104,9 @@ func prepareFixture(_ item: ReviewEvalCase, fixture: ReviewEvalFixture, dir: URL
 }
 
 for item in cases {
-    let sessionId = UUID().uuidString.lowercased()
+    var sessionId = UUID().uuidString.lowercased()
+    var resumeId: String?
+    var freshReason: String?
     var prompt = ""
     var access = ClaudeCommand.WriteAccess()
     var environment: [String: String] = ["POKEMATE_EVAL": "1"]
@@ -110,29 +122,41 @@ for item in cases {
             continue
         }
         domain = ReviewEval.fixtureDomain(item, fixture: fixture, map: map)
+        if let reuse {
+            resumeId = sessions.reuseId(DomainReview.sessionKey(domain), policy: reuse, now: Date())
+            freshReason = sessions.sessions[DomainReview.sessionKey(domain)]?.freshReason
+        }
         var config = PipelineConfig.load(promptsDir: Rules.promptsDir, access: [:], dir: work, helper: helper,
                                          fallbackDir: Rules.folder(.prompt, layer: .shared))
         config.domains = map
         config.notes = notes
         let state = ReviewEval.fixtureState(fixture, domain: domain, worktree: prepared.worktree, now: Date())
-        prompt = JiraPipeline.prompt(role: .reviewer, state: state, config: config, resumed: false, diffFile: prepared.diff) + "\n\n" + ReviewEval.pipelineTail
+        prompt = JiraPipeline.prompt(role: .reviewer, state: state, config: config, resumed: resumeId != nil, diffFile: prepared.diff) + "\n\n" + ReviewEval.pipelineTail
         access = ReviewEval.reviewerAccess(helper: helper, worktree: prepared.worktree,
                                            dirs: [home + "/Workspace", home + "/.claude/references", notes.root, work.path] + map.knowledgePaths(for: domain))
-        line("\(item.id) 시작 · 가상 레포 \(fixture.repo) · Jira 리뷰어 경로 · 도메인 \(domain) · 세션 \(sessionId)")
+        line("\(item.id) 시작 · 가상 레포 \(fixture.repo) · Jira 리뷰어 경로 · 도메인 \(domain)")
     } else {
         guard let target = ReviewTarget.parse(url: item.url) else { continue }
         let chosen = ReviewEval.domain(for: item, target: target, map: map, book: book)
         domain = chosen.domain
+        if let reuse {
+            resumeId = sessions.reuseId(DomainReview.sessionKey(domain), policy: reuse, now: Date())
+            freshReason = sessions.sessions[DomainReview.sessionKey(domain)]?.freshReason
+        }
         access = ReviewEval.access(helper: helper, dirs: [home + "/Workspace", home + "/.claude/references", notes.root] + map.knowledgePaths(for: chosen.domain))
         prompt = ReviewEval.prompt(item: item, target: target, domain: chosen.domain, why: chosen.why, source: chosen.source, notes: notes,
-                                   helper: helper, template: template, knowledge: map.knowledgeText(for: chosen.domain))
+                                   helper: helper, template: template, knowledge: map.knowledgeText(for: chosen.domain), firstRun: resumeId == nil)
         environment = ReviewEval.environment(target: target)
-        line("\(item.id) 시작 · 도메인 \(chosen.domain) · 세션 \(sessionId)")
+        line("\(item.id) 시작 · 도메인 \(chosen.domain)")
     }
+    if let resumeId { sessionId = resumeId }
+    line("\(item.id) 세션 \(resumeId == nil ? "새로" + (freshReason.map { " (\($0))" } ?? "") : "이어 쓰기") · \(sessionId)")
+    let before = ReviewEval.transcriptFile(configDir: AppPaths.claudeConfigDir, sessionId: sessionId)
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.split(separator: "\n", omittingEmptySubsequences: false).count ?? 0
     let started = Date()
     let runner = ClaudeRunner()
-    let response = await runner.run(prompt: prompt, sessionId: nil, settings: settings, writeTools: access.tools, writeDirs: access.dirs,
-                                     timeout: 2400, newSessionId: sessionId, automation: true, extraEnvironment: environment)
+    let response = await runner.run(prompt: prompt, sessionId: resumeId, settings: settings, writeTools: access.tools, writeDirs: access.dirs,
+                                     timeout: 2400, newSessionId: resumeId == nil ? sessionId : nil, automation: true, extraEnvironment: environment)
     let seconds = Date().timeIntervalSince(started)
     var text = ""
     var ok = false
@@ -145,10 +169,18 @@ for item in cases {
     }
     let transcript = ReviewEval.transcriptFile(configDir: AppPaths.claudeConfigDir, sessionId: sessionId)
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
-    let skills = ReviewEval.skillsUsed(transcript: transcript)
+    let skills = ReviewEval.skillsUsed(transcript: ReviewEval.newLines(transcript, after: before))
+    let totals = transcript.isEmpty ? nil : TranscriptUsage.total(Data(transcript.utf8))
+    let contextAfter = totals?.lastContext ?? 0
+    if reuse != nil {
+        ReviewEval.recordSession(&sessions, key: DomainReview.sessionKey(domain), sessionId: sessionId, ok: ok, caseId: item.id,
+                                 usage: runner.lastUsage, transcript: totals, now: Date())
+        sessions.save(to: bookFile)
+    }
     let cost = runner.lastUsage?.costUSD ?? 0
     try? text.write(to: out.appendingPathComponent("\(item.id).md"), atomically: true, encoding: .utf8)
-    let meta = ReviewEval.meta(costUSD: cost, seconds: seconds, skills: skills, sessionId: sessionId, usage: runner.lastUsage, ok: ok, domain: domain)
+    let meta = ReviewEval.meta(costUSD: cost, seconds: seconds, skills: skills, sessionId: sessionId, usage: runner.lastUsage, ok: ok, domain: domain,
+                               resumed: resumeId != nil, freshReason: resumeId == nil ? freshReason : nil, contextAfter: contextAfter)
     if let json = try? JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys]) {
         try? json.write(to: out.appendingPathComponent("\(item.id).json"))
     }

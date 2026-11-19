@@ -685,7 +685,8 @@ def test_eval_score_reads_result_document(env, tmp_path, capsys):
 ## 판정
 댓글 (승인하지 않음)
 ```""", encoding="utf-8")
-    (results / "sample-web-280.json").write_text(json.dumps({"costUSD": 2.5, "seconds": 300, "skills": ["domain-review", "code-review"]}), encoding="utf-8")
+    (results / "sample-web-280.json").write_text(json.dumps({"costUSD": 2.5, "seconds": 300, "skills": ["domain-review", "code-review"], "resumed": False, "freshReason": "문맥 130K (기준 120K)", "contextAfter": 64000}), encoding="utf-8")
+    (results / "sample-docs-1.json").write_text(json.dumps({"costUSD": 0.4, "resumed": True}), encoding="utf-8")
     (results / "sample-docs-1.md").write_text("확인한 범위: 문서만, 깊이 가볍게\n결함: 없음\n미확인(질문): 없음\n판정: 승인\n", encoding="utf-8")
     assert run("eval-score", "--cases", str(cases), "--results", str(results)) == 1
     out = capsys.readouterr().out
@@ -693,7 +694,8 @@ def test_eval_score_reads_result_document(env, tmp_path, capsys):
     assert rows["sample-web-280"]["pass"] and rows["sample-web-280"]["verdict"] == "댓글" and rows["sample-web-280"]["found"] == ["건너뛴 상품과 화면 조건"]
     assert rows["sample-docs-1"]["pass"] and rows["sample-docs-1"]["verdict"] == "승인" and rows["sample-docs-1"]["depth"] == "가볍게"
     assert rows["sample-missing"]["note"] == "결과 없음" and not rows["sample-missing"]["pass"]
-    assert "통과 2/3" in out and "$2.50" in out and "domain-review,code-review" in out and str(results / "sample-web-280.md") in out
+    assert "통과 2/3" in out and "$2.50" in out and "비용 합계 $2.90" in out and "domain-review,code-review" in out and str(results / "sample-web-280.md") in out
+    assert "새로 (문맥 130K (기준 120K))" in out and "64k" in out and "이어 쓰기" in out
     assert (results / "score.md").exists()
 
 
