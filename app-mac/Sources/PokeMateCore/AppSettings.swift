@@ -31,6 +31,7 @@ public struct AppSettings: Codable, Equatable {
     public var workSessionAlertPercent = 70
     public var sessionReuseMinutes = SessionReuse.defaultMinutes
     public var sessionReuseMaxTokens = SessionReuse.defaultTokens
+    public var reviewerAlwaysFresh = true
 
     public static let defaultAssistantName = "메이트"
     public static let defaultAutomationRules = ["commit-pr.md", "domain-knowledge.md", "production-env.md"]
@@ -43,7 +44,7 @@ public struct AppSettings: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case assistantName, repoDir, claudePath, uvPath, reportHour, reportMinute, lastReportDay, hotkey, ownerName, model, effort, useHomeInstructions, pokedexRange, claudeTools, workSessionAlertPercent,
-             homeInChat, homeInAutomation, automationRules, shareHomeSkills, automationModel, automationEffort, sessionReuseMinutes, sessionReuseMaxTokens
+             homeInChat, homeInAutomation, automationRules, shareHomeSkills, automationModel, automationEffort, sessionReuseMinutes, sessionReuseMaxTokens, reviewerAlwaysFresh
     }
 
     public static let `default` = AppSettings(
@@ -94,6 +95,7 @@ public struct AppSettings: Codable, Equatable {
         workSessionAlertPercent = try c.decodeIfPresent(Int.self, forKey: .workSessionAlertPercent) ?? 70
         sessionReuseMinutes = max(0, try c.decodeIfPresent(Int.self, forKey: .sessionReuseMinutes) ?? SessionReuse.defaultMinutes)
         sessionReuseMaxTokens = max(0, try c.decodeIfPresent(Int.self, forKey: .sessionReuseMaxTokens) ?? SessionReuse.defaultTokens)
+        reviewerAlwaysFresh = try c.decodeIfPresent(Bool.self, forKey: .reviewerAlwaysFresh) ?? true
     }
 }
 

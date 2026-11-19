@@ -33,6 +33,8 @@ struct SettingsView: View {
                     Text("늘 이어 쓰기").tag(0)
                     ForEach([30, 55, 120, 240], id: \.self) { Text("\($0)분").tag($0) }
                 }
+                Toggle("리뷰어는 늘 새 세션으로 시작", isOn: $model.settings.reviewerAlwaysFresh)
+                    .help("GitHub 리뷰의 도메인 리뷰어와 Jira 역할 처리의 리뷰어 단계. 이어 쓰면 앞 건의 판단 습관이 이어지고 캐시가 살아 있어도 더 비쌌어요. 끄면 아래 기준을 따라요")
                 Picker("자동 처리: 문맥이 이만큼이면 새 세션", selection: $model.settings.sessionReuseMaxTokens) {
                     Text("늘 이어 쓰기").tag(0)
                     ForEach([80_000, 120_000, 160_000, 200_000], id: \.self) { Text(TokenFormat.compact($0)).tag($0) }

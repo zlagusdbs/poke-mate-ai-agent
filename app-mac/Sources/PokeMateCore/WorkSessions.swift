@@ -85,21 +85,28 @@ public struct SessionReuse: Equatable, Sendable {
     public static let defaultMinutes = 55
     public static let defaultTokens = 120_000
 
+    public static let reviewerReason = "리뷰어는 늘 새로"
+
     public var idleMinutes: Int
     public var maxTokens: Int
+    public var freshReviewer: Bool
 
-    public init(idleMinutes: Int = SessionReuse.defaultMinutes, maxTokens: Int = SessionReuse.defaultTokens) {
+    public init(idleMinutes: Int = SessionReuse.defaultMinutes, maxTokens: Int = SessionReuse.defaultTokens, freshReviewer: Bool = true) {
         self.idleMinutes = idleMinutes
         self.maxTokens = maxTokens
+        self.freshReviewer = freshReviewer
     }
 
     public init(settings: AppSettings) {
-        self.init(idleMinutes: settings.sessionReuseMinutes, maxTokens: settings.sessionReuseMaxTokens)
+        self.init(idleMinutes: settings.sessionReuseMinutes, maxTokens: settings.sessionReuseMaxTokens, freshReviewer: settings.reviewerAlwaysFresh)
     }
 
-    public static let always = SessionReuse(idleMinutes: 0, maxTokens: 0)
+    public static let always = SessionReuse(idleMinutes: 0, maxTokens: 0, freshReviewer: false)
 
     public func freshReason(for session: WorkSession, now: Date) -> String? {
+        if freshReviewer, PipelineRole.split(session.repo)?.role == .reviewer {
+            return Self.reviewerReason
+        }
         let idle = Int(now.timeIntervalSince(session.lastUsed) / 60)
         if idleMinutes > 0 && idle >= idleMinutes {
             return "식음 \(idle)분 (기준 \(idleMinutes)분)"
