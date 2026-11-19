@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{533491DD-B3FB-47BF-BCD5-9EDE1F0B1944}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PokeMate.Core", "src\PokeMate.Core\PokeMate.Core.csproj", "{BAE9C4E5-5522-40F3-9D04-8678B1461196}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PokeMate.CoreChecks", "src\PokeMate.CoreChecks\PokeMate.CoreChecks.csproj", "{B444C312-DCB3-4328-8223-A6E633F2FD7B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BAE9C4E5-5522-40F3-9D04-8678B1461196}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BAE9C4E5-5522-40F3-9D04-8678B1461196}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BAE9C4E5-5522-40F3-9D04-8678B1461196}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BAE9C4E5-5522-40F3-9D04-8678B1461196}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B444C312-DCB3-4328-8223-A6E633F2FD7B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B444C312-DCB3-4328-8223-A6E633F2FD7B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B444C312-DCB3-4328-8223-A6E633F2FD7B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B444C312-DCB3-4328-8223-A6E633F2FD7B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{BAE9C4E5-5522-40F3-9D04-8678B1461196} = {533491DD-B3FB-47BF-BCD5-9EDE1F0B1944}
+		{B444C312-DCB3-4328-8223-A6E633F2FD7B} = {533491DD-B3FB-47BF-BCD5-9EDE1F0B1944}
+	EndGlobalSection
+EndGlobal
