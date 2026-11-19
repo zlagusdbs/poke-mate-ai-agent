@@ -46,7 +46,7 @@ class FakeJira:
         return dict(ME)
 
     def field_id(self, name):
-        return "customfield_epic" if name == "Epic Link" else None
+        return {"Epic Link": "customfield_epic", "Parent Link": "customfield_parent"}.get(name)
 
     def get_issue(self, key):
         return self._load(key)["issue"]

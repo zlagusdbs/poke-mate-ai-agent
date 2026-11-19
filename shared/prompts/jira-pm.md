@@ -5,7 +5,12 @@
 2. `jira-get` 으로 본문·타입·Epic·담당자·상태를 본다. 담당자가 나가 아니거나, 이미 해결됐거나, 회의·휴가 같은 공수 기록용 반복 티켓이면 아무것도 쓰지 않고 stop.
 3. `jira-comments`, `jira-links` 로 댓글 전부와 연결 이슈를 읽는다.
 4. 시작 알림: `$H event --notify --source jira --task pokemate-jira --event detected --key {KEY} --title "{요약}" --kind "{Story|Task|기타}"`
-5. 유형별로 2절(Story)·3절(Task)·그 밖(Bug·Sub-task 등은 `--event blocked --result "유형 {이름}: 처리 규칙 없음"` → jira-state → stop)로 간다.
+5. **프로젝트 단위 개발 건은 처리하지 않고 알림만 보낸다.** 유형이 Story 이면 2절로 가기 전에 확인한다.
+   - Story 에 `epicLink` 가 있으면 그 Epic 을 `jira-get`·`jira-links` 로 본다. Epic 의 `parentLink` 가 상위 프로젝트 단위 티켓을 가리키거나, 연결 이슈·요약·본문·라벨에 프로젝트 단위 표시가 있으면 프로젝트 단위 건이다.
+   - Epic 이 있는데 프로젝트 연결 여부를 확인할 수 없으면 프로젝트 단위 건으로 본다(개발하지 않는 쪽).
+   - 프로젝트 단위 건이면 상태를 바꾸지 않고, 댓글을 쓰지 않고, 개발 역할로 넘기지 않는다. `$H event --notify --source jira --task pokemate-jira --event blocked --key {KEY} --kind Story --result "프로젝트 단위 개발 건: 자동 처리 안 함 (Epic {Epic 키})" --needs "직접 진행"` → `$H jira-state --key {KEY} --type Story --result "프로젝트 단위 개발 건: 알림만"` → stop.
+   - 팀마다 판단 기준이 다르면 `local/prompts/jira-pm.md` 에서 이 항목을 덮어쓴다.
+6. 유형별로 2절(Story)·3절(Task)·그 밖(Bug·Sub-task 등은 `--event blocked --result "유형 {이름}: 처리 규칙 없음"` → jira-state → stop)로 간다.
 
 ## 2. Story
 1. `jira-transition --to start`

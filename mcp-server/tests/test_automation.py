@@ -70,7 +70,7 @@ class FakeJira:
         return self.me_info
 
     def field_id(self, name):
-        return "customfield_1"
+        return {"Epic Link": "customfield_1", "Parent Link": "customfield_2"}.get(name)
 
     def get_issue(self, key):
         return self.issues[key]
@@ -289,6 +289,13 @@ def test_jira_read_helpers(env, fake_jira, capsys):
     assert run("jira-get", "--key", "J-1") == 0
     got = json.loads(capsys.readouterr().out)
     assert got["type"] == "Story" and got["epicLink"] == "EPIC-1" and got["assignee"]["name"] == "me" and got["url"].endswith("/browse/J-1")
+    assert got["parentLink"] is None
+    fake_jira.issues["J-1"]["fields"]["customfield_2"] = "PROJ-7"
+    assert run("jira-get", "--key", "J-1") == 0
+    assert json.loads(capsys.readouterr().out)["parentLink"] == "PROJ-7"
+    fake_jira.issues["J-1"]["fields"]["customfield_2"] = {"hasEpicLinkFieldDependency": False, "data": {"id": 9, "key": "PROJ-8"}}
+    assert run("jira-get", "--key", "J-1") == 0
+    assert json.loads(capsys.readouterr().out)["parentLink"] == "PROJ-8"
     assert run("jira-search", "--jql", "assignee = currentUser()") == 0
     assert json.loads(capsys.readouterr().out)[0]["key"] == "J-1"
     assert run("jira-comments", "--key", "J-1") == 0
