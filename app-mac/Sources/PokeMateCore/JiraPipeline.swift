@@ -246,7 +246,7 @@ public struct PipelineState: Codable, Equatable, Sendable {
             return testsPassed ? [.reviewer, .dev, .stop] : [.dev, .stop]
         case .dev: return [.tester, .pm]
         case .tester: return [.dev, .pm]
-        case .reviewer: return [.dev, .push]
+        case .reviewer: return [.dev, .push, .pm]
         }
     }
 
@@ -378,10 +378,11 @@ public enum PipelineAccess {
         func bash(_ names: [String]) -> [String] { names.map { "Bash(\(helper) \($0):*)" } }
         return [
             .pm: ClaudeCommand.WriteAccess(tools: bash(["jira-get", "jira-search", "jira-comments", "jira-links", "jira-transition", "jira-comment",
-                                                        "write-note", "event", "jira-state", "git-read"]), dirs: [workDir, references]),
-            .dev: ClaudeCommand.WriteAccess(tools: bash(["run-tests", "git-read"]), dirs: [workDir]),
+                                                        "write-note", "event", "jira-state", "git-read", "domain-note", "domain-map"]), dirs: [workDir, references]),
+            .dev: ClaudeCommand.WriteAccess(tools: bash(["run-tests", "git-read"]), dirs: [workDir, references]),
             .tester: ClaudeCommand.WriteAccess(tools: bash(["run-tests", "git-read"]), dirs: [workDir]),
-            .reviewer: ClaudeCommand.WriteAccess(tools: bash(["git-read"]) + ["Skill(code-review)"], dirs: [workDir, pipelines]),
+            .reviewer: ClaudeCommand.WriteAccess(tools: bash(["git-read", "domain-note"]) + ["Skill(domain-review)", "Skill(code-review)"],
+                                                 dirs: [workDir, pipelines, references]),
         ]
     }
 
@@ -470,9 +471,10 @@ public struct PipelineConfig: Sendable {
     public var maxSteps: Int
     public var domains: DomainMap
     public var home: String
+    public var notes: DomainNotes
 
     public init(prompts: [PipelineRole: String], common: String, access: [PipelineRole: ClaudeCommand.WriteAccess], dir: URL, maxSteps: Int = 40,
-                domains: DomainMap = DomainMap(), home: String = NSHomeDirectory()) {
+                domains: DomainMap = DomainMap(), home: String = NSHomeDirectory(), notes: DomainNotes? = nil) {
         self.prompts = prompts
         self.common = common
         self.access = access
@@ -480,6 +482,7 @@ public struct PipelineConfig: Sendable {
         self.maxSteps = maxSteps
         self.domains = domains
         self.home = home
+        self.notes = notes ?? DomainNotes(root: DomainNotes.root(fromConnections: nil, home: home))
     }
 
     public static func promptName(_ role: PipelineRole) -> String { "jira-\(role.rawValue)" }
@@ -519,6 +522,7 @@ public enum JiraPipeline {
                    "- 되돌림: 테스터→개발 \(s.testerBacks)/\(PipelineState.backLimit), 리뷰어→개발 \(s.reviewerBacks)/\(PipelineState.backLimit)"]
         if !s.history.isEmpty { now.append("- 지나온 단계: " + s.history.map { "\($0.role)→\($0.next)" }.joined(separator: ", ")) }
         if let diffFile { now.append("- 리뷰할 변경(diff 파일): \(diffFile)") }
+        if role != .tester { now.append(config.notes.promptLines(domain: s.domain, helper: "$H", source: s.key, canWrite: role != .dev)) }
         parts.append(now.joined(separator: "\n"))
         if role != .pm, let brief = s.brief, !brief.isEmpty { parts.append("## PM 개발 지시서\n\(brief)") }
         if let from = s.from {
@@ -627,7 +631,7 @@ public enum JiraPipeline {
         let sessionKey = PipelineRole.sessionKey(domain: s.domain, role: role)
         let known = await io.sessionId(sessionKey)
         var access = PipelineAccess.access(for: role, worktree: s.worktree, table: config.access)
-        access.dirs += config.domains.knowledgePaths(for: s.domain, home: config.home).filter { !access.dirs.contains($0) }
+        access.dirs += (config.domains.knowledgePaths(for: s.domain, home: config.home) + [config.notes.root]).filter { !access.dirs.contains($0) }
         let interrupted = s.inflight?.role == role.rawValue ? s.inflight : nil
         var result: PipelineRoleResult
         var usedId: String

@@ -1268,6 +1268,21 @@ do {
     let kprompts = await kscript.prompts
     check(kprompts.first?.1.contains("지식:\n   - `~/Workspace/acme-kb`") == true && kprompts.first?.1.contains("{{knowledge}}") == false
           && kprompts.first?.2.dirs.contains("/u/Workspace/acme-kb") == true, "knowledge: 프롬프트 자리표시 치환, 읽기 폴더에 추가")
+    check(kprompts.first?.1.contains("점검표 `/u/.claude/references/notes/acme/checklist.md` (없음)") == true
+          && kprompts.first?.1.contains("$H domain-note --domain acme --init") == true
+          && kprompts.first?.1.contains("--source \"ACME-1\"") == true
+          && kprompts.first?.2.dirs.contains("/u/.claude/references/notes") == true, "notes: 역할 프롬프트에 공유 점검표·노트 안내, 노트 폴더는 읽기 폴더")
+    let review = defaults[.reviewer]!
+    check(review.tools.contains("Skill(domain-review)") && review.tools.contains("Skill(code-review)") && review.tools.contains("Bash(h domain-note:*)")
+          && review.dirs.contains("/refs") && defaults[.dev]!.dirs.contains("/refs") && defaults[.pm]!.tools.contains("Bash(h domain-note:*)")
+          && !defaults[.dev]!.tools.contains("Bash(h domain-note:*)") && !defaults[.tester]!.dirs.contains("/refs"),
+          "notes: 리뷰어는 domain-review 스킬과 domain-note, 개발은 읽기만, 테스터는 그대로")
+    var unsure = start
+    unsure.stage = .reviewer
+    unsure.testsPassed = true
+    let unsureOutcome = unsure.apply(role: .reviewer, next: PipelineNext(kind: .pm, note: "미확인 2건"), summary: "", now: Date())
+    check(unsureOutcome == .next && unsure.stage == .pm && unsure.reviewerBacks == 0 && unsure.note == "미확인 2건",
+          "pipeline: 리뷰어가 미확인만 있으면 PM 으로 (되돌림 횟수는 안 셈)")
 
     let bc = PipelineScript([.pm: [nextBlock("stop", #", "note": "프로젝트 단위 개발 건: 자동 처리 안 함""#)]])
     let bcState = await JiraPipeline.run(start, io: pipelineIO(bc), config: config)
@@ -1422,13 +1437,140 @@ do {
           && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"nope\"}\n```", map: map) == nil
           && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"default\"}\n```", map: map)?.domain == "default",
           "review: 도메인 블록 읽기 (없는 도메인은 거절, default 는 됨)")
-    let memo = DomainReview.memoFile("acme", local: URL(fileURLWithPath: "/r/local"))
-    let first = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, memo: memo, memoLines: 0, helper: "H", context: "본문")
-    let again = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .learned, firstRun: false, memo: memo, memoLines: 12, helper: "H", context: "본문")
-    check(memo.path == "/r/local/domains/acme.md" && DomainReview.sessionKey("acme") == "acme:reviewer"
-          && first.contains("세션 acme:reviewer") && first.contains("첫 실행") && first.contains("아직 없음") && first.hasSuffix("본문")
-          && again.contains("새로 필요한 것만") && again.contains("(12줄)") && again.contains("H gh-file --repo acme/sample-web")
-          && again.contains("H domain-note --domain acme") && again.contains("추측·미확인"), "review: 리뷰어 세션 안내 (첫 실행·이어 쓰기·메모·gh-file·domain-note)")
+    let present: [String: Int] = ["/n/acme/checklist.md": 20, "/n/acme/notes.md": 12]
+    let notes = DomainNotes(root: "/n", lines: { present[$0] })
+    let empty = DomainNotes(root: "/n", lines: { _ in nil })
+    let first = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, notes: empty, helper: "H", context: "본문")
+    let again = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .learned, firstRun: false, notes: notes, helper: "H", context: "본문")
+    let unsure = DomainReview.reviewPrompt(target: other, domain: "default", why: "못 정함", source: .chosen, firstRun: true, notes: notes, helper: "H", context: "본문")
+    check(DomainReview.sessionKey("acme") == "acme:reviewer"
+          && first.contains("세션 acme:reviewer") && first.contains("첫 실행") && first.contains("H domain-note --domain acme --init") && first.hasSuffix("본문")
+          && first.contains("`/n/acme/checklist.md` (없음)")
+          && again.contains("새로 필요한 것만") && again.contains("`/n/acme/checklist.md` (20줄)") && again.contains("`/n/acme/notes.md` (12줄)")
+          && !again.contains("--init") && again.contains("H gh-file --repo acme/sample-web")
+          && again.contains("H domain-note --domain acme --kind {용어집|업무 규칙|장애|함정|결정|동작} --source \"sample-web#2\"") && again.contains("직접 고치지 않는다")
+          && unsure.contains("도메인 미정, 점검표 없음") && !unsure.contains("domain-note")
+          && !notes.promptLines(domain: "acme", helper: "H", source: "ACME-1", canWrite: false).contains("domain-note")
+          && notes.promptLines(domain: "acme", helper: "H", source: "ACME-1", canWrite: false).contains("읽기만"),
+          "review: 리뷰어 세션 안내 (첫 실행·이어 쓰기·공유 노트·init·gh-file·domain-note·default)")
+    let rows = Data(#"[{"kind":"settings","id":"automation","domainNotesDir":"~/kb/notes"},{"id":"jira"}]"#.utf8)
+    check(DomainNotes.root(fromConnections: rows, home: "/u") == "/u/kb/notes" && DomainNotes.root(fromConnections: nil, home: "/u") == "/u/.claude/references/notes"
+          && DomainNotes.root(fromConnections: Data(#"[{"kind":"settings","id":"automation","domainNotesDir":" "}]"#.utf8), home: "/u") == "/u/.claude/references/notes",
+          "notes: 노트 폴더는 automation 설정 domainNotesDir, 없으면 ~/.claude/references/notes")
+    let mapped = DomainNotes(root: "/n", lines: { _ in 5 }, maps: { $0 == "/n/acme/maps" ? (1...22).map { "주제\($0)" } : [] })
+    let mapLine = mapped.promptLines(domain: "acme", helper: "H", source: "ACME-1")
+    check(mapLine.contains("- 지도: `/n/acme/maps/` 아래 주제1, ") && mapLine.contains(" 외 2개") && !mapLine.contains("주제22,")
+          && !DomainNotes(root: "/n", lines: { _ in 5 }, maps: { _ in [] }).promptLines(domain: "acme", helper: "H", source: "ACME-1").contains("지도"),
+          "notes: 지도가 있으면 주제 목록(최대 20개)을 안내, 없으면 줄 없음")
+    let mapBase = FileManager.default.temporaryDirectory.appendingPathComponent("pokemate-maps-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: mapBase, withIntermediateDirectories: true)
+    for name in ["b.md", "a.md", ".hidden.md", "x.txt"] { FileManager.default.createFile(atPath: mapBase.appendingPathComponent(name).path, contents: Data()) }
+    check(DomainNotes.listMaps(mapBase.path) == ["a", "b"] && DomainNotes.listMaps("/n/none").isEmpty, "notes: 지도 목록은 .md 만, 숨김 파일 제외")
+    try? FileManager.default.removeItem(at: mapBase)
+    let mapDefaults = PipelineAccess.defaults(helper: "h", workDir: "/ws", references: "/refs", pipelines: "/p")
+    check(mapDefaults[.pm]?.tools.contains("Bash(h domain-map:*)") == true && mapDefaults[.reviewer]?.tools.contains("Bash(h domain-map:*)") == false,
+          "notes: 지도는 PM 만 남긴다")
+    let linkBase = FileManager.default.temporaryDirectory.appendingPathComponent("pokemate-notes-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: linkBase.appendingPathComponent("real"), withIntermediateDirectories: true)
+    try? FileManager.default.createSymbolicLink(at: linkBase.appendingPathComponent("link"), withDestinationURL: linkBase.appendingPathComponent("real"))
+    check(DomainNotes.resolved(linkBase.appendingPathComponent("link").path).hasSuffix("/real") && DomainNotes.resolved("/n/none") == "/n/none",
+          "notes: 노트 폴더가 심볼릭 링크면 실제 경로로 (Claude 권한은 실제 경로로 판단)")
+    try? FileManager.default.removeItem(at: linkBase)
+}
+
+do {
+    let raw = Data(#"[{"id": "sample-web-280", "url": "https://git.example.com/acme/sample-web/pull/280", "domain": "acme", "mustFind": []}, {"id": "", "url": "https://git.example.com/acme/x/pull/1"}, {"id": "bad", "url": "nope"}, {"id": "sample-docs-1", "url": "https://git.example.com/acme/sample-docs/pull/1"}]"#.utf8)
+    let cases = ReviewEval.loadCases(raw)
+    check(cases.map(\.id) == ["sample-web-280", "sample-docs-1"] && cases[0].domain == "acme" && cases[1].domain == nil, "eval: 문제 묶음 읽기 (id·주소 없는 것은 뺌)")
+    let access = ReviewEval.access(helper: "H", dirs: ["/w", "/n", "/w"])
+    check(access.dirs == ["/w", "/n"] && access.tools.contains("Bash(H gh-diff:*)") && access.tools.contains("Skill(domain-review)") && access.tools.contains("Skill(code-review)")
+          && !access.tools.contains { $0.contains("gh-review") || $0.contains("event") || $0.contains("domain-note") || $0.contains("write-note") || $0.contains("review-state") || $0.hasPrefix("Edit(") || $0.hasPrefix("Write(") }
+          && ReviewEval.environment(target: ReviewTarget.parse(url: cases[0].url)!) == ["POKEMATE_EVAL": "1", "POKEMATE_REVIEW_REPO": "acme/sample-web"],
+          "eval: 읽기 명령과 스킬만 허용, 쓰기 막는 환경")
+    let emap = DomainMap.parse(Data(#"{"acme": {"repos": ["sample-docs"]}}"#.utf8))
+    let target = ReviewTarget.parse(url: cases[0].url)!
+    check(ReviewEval.domain(for: cases[0], target: target, map: emap, book: ReviewDomainBook()).domain == "acme"
+          && ReviewEval.domain(for: cases[1], target: ReviewTarget.parse(url: cases[1].url)!, map: emap, book: ReviewDomainBook()).source == .explicit
+          && ReviewEval.domain(for: ReviewEvalCase(id: "x", url: cases[0].url, domain: "nope"), target: target, map: emap, book: ReviewDomainBook()).domain == "default",
+          "eval: 도메인은 문제에 적은 것 → 기록 → default")
+    let ep = ReviewEval.prompt(item: cases[0], target: target, domain: "acme", why: "평가", source: .chosen, notes: DomainNotes(root: "/n", lines: { _ in 3 }),
+                               helper: "H", template: "리뷰 {{helper}} gh-diff\n{{knowledge}}", knowledge: "   - `kb`")
+    check(ep.contains("리뷰 H gh-diff") && ep.contains("   - `kb`") && !ep.contains("{{") && ep.contains("```pokemate-eval") && ep.contains("링크: \(cases[0].url)")
+          && ep.contains("세션 acme:reviewer") && ep.contains("review-state 저장"), "eval: 실제 리뷰와 같은 프롬프트 + 평가 끝맺음")
+    let transcript = [#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"domain-review"}}]}}"#,
+                      #"{"type":"user","message":{"content":"x"}}"#,
+                      #"{"type":"assistant","message":{"content":[{"type":"text","text":"a"},{"type":"tool_use","name":"Skill","input":{"skill":"code-review","args":"high"}},{"type":"tool_use","name":"Bash","input":{}}]}}"#].joined(separator: "\n")
+    check(ReviewEval.skillsUsed(transcript: transcript) == ["domain-review", "code-review"], "eval: 기록에서 부른 스킬 찾기 (스킬 안에서 부른 것 포함)")
+    let fixtureCases = ReviewEval.loadCases(Data(#"[{"id": "acme-coupon-boundary", "fixture": "acme-coupon-boundary"}, {"id": "bad", "fixture": "../x"}, {"id": "dot", "fixture": ".x"}]"#.utf8))
+    check(fixtureCases.map(\.id) == ["acme-coupon-boundary"] && fixtureCases[0].fixture == "acme-coupon-boundary" && fixtureCases[0].url.isEmpty,
+          "eval: 가상 레포 문제 읽기 (경로 넘는 이름 거절)")
+    let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let fixtureDir = ReviewEval.fixtureDir("acme-coupon-boundary", local: repoRoot.appendingPathComponent("no-local"), shared: repoRoot.appendingPathComponent("shared"))
+    let fixture = fixtureDir.flatMap { ReviewEval.loadFixture($0) }
+    check(fixture?.key == "ACME-201" && fixture?.repo == "acme-sample-coupon" && fixture?.brief.contains("이상이면 할인") == true
+          && FileManager.default.fileExists(atPath: fixtureDir!.appendingPathComponent("head/coupon.py").path),
+          "eval: shared 의 가상 레포 문제 파일")
+    if let fixture {
+        let fmap = DomainMap.parse(Data(#"{"acme": {"repos": ["acme-sample-coupon"]}}"#.utf8))
+        let fstate = ReviewEval.fixtureState(fixture, domain: ReviewEval.fixtureDomain(fixtureCases[0], fixture: fixture, map: fmap), worktree: "/w/W", now: Date())
+        check(fstate.domain == "acme" && fstate.stage == .reviewer && fstate.testsPassed && fstate.worktree == "/w/W" && fstate.brief == fixture.brief
+              && fstate.allowed(for: .reviewer).contains(.pm), "eval: 가상 레포 문제는 리뷰어 단계 상태로 시작")
+        let fconfig = PipelineConfig(prompts: [.reviewer: "리뷰어 지시"], common: "공통", access: [:], dir: URL(fileURLWithPath: "/w"),
+                                     notes: DomainNotes(root: "/n", lines: { _ in 3 }, maps: { _ in [] }))
+        let fprompt = JiraPipeline.prompt(role: .reviewer, state: fstate, config: fconfig, resumed: false, diffFile: "/w/ACME-201.diff") + "\n\n" + ReviewEval.pipelineTail
+        check(fprompt.contains("리뷰할 변경(diff 파일): /w/ACME-201.diff") && fprompt.contains("## PM 개발 지시서") && fprompt.contains("```pokemate-eval")
+              && fprompt.contains("domain-note 는 하지 않는다"), "eval: 가상 레포 문제는 Jira 리뷰어 프롬프트 + 평가 끝맺음")
+    }
+    let raccess = ReviewEval.reviewerAccess(helper: "H", worktree: "/w/W", dirs: ["/ws", "/refs", "/n"])
+    check(raccess.tools.contains("Skill(domain-review)") && raccess.tools.contains("Skill(code-review)") && raccess.tools.contains("Bash(H git-read:*)")
+          && !raccess.tools.contains { $0.contains("domain-note") || $0.contains("domain-map") || $0.hasPrefix("Edit(") || $0.hasPrefix("Write(") }
+          && ["/ws", "/refs", "/n", "/w/W"].allSatisfy(raccess.dirs.contains), "eval: 가상 레포 리뷰어는 읽기·스킬만, 쓰기 없음")
+}
+
+do {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    var rbook = WorkSessionBook()
+    rbook.record(repo: "acme:reviewer", sessionId: "s1", key: "ACME-1", usage: nil, now: t0)
+    rbook.sessions["acme:reviewer"]?.contextTokens = 90_000
+    let policy = SessionReuse()
+    check(policy.idleMinutes == 55 && policy.maxTokens == 120_000, "reuse: 기본 55분·120k")
+    check(rbook.reuseId("acme:reviewer", policy: policy, now: t0.addingTimeInterval(54 * 60)) == "s1" && rbook.archived.isEmpty,
+          "reuse: 55분 안·문맥 상한 아래면 이어 씀")
+    var idle = rbook
+    check(idle.reuseId("acme:reviewer", policy: policy, now: t0.addingTimeInterval(61 * 60)) == nil
+          && idle.sessions["acme:reviewer"]?.id == "" && idle.sessions["acme:reviewer"]?.freshReason == "식음 61분 (기준 55분)"
+          && idle.archived.map(\.id) == ["s1"], "reuse: 55분 넘게 쉬면 새 세션, 옛 세션은 보관, 이유 남김")
+    idle.record(repo: "acme:reviewer", sessionId: "s2", key: "ACME-2", usage: nil, now: t0.addingTimeInterval(62 * 60))
+    check(idle.sessions["acme:reviewer"]?.id == "s2" && idle.sessions["acme:reviewer"]?.freshReason == "식음 61분 (기준 55분)"
+          && idle.sessions["acme:reviewer"]?.keys == ["ACME-2"] && idle.archived.count == 1, "reuse: 새 세션 기록에 이유가 이어짐")
+    var big = rbook
+    big.sessions["acme:reviewer"]?.contextTokens = 130_000
+    check(big.reuseId("acme:reviewer", policy: policy, now: t0.addingTimeInterval(60)) == nil
+          && big.sessions["acme:reviewer"]?.freshReason?.hasPrefix("문맥 ") == true, "reuse: 문맥이 상한 이상이면 새 세션")
+    var keep = rbook
+    keep.sessions["acme:reviewer"]?.contextTokens = 130_000
+    check(keep.reuseId("acme:reviewer", policy: .always, now: t0.addingTimeInterval(9 * 3600)) == "s1"
+          && SessionReuse(idleMinutes: 0, maxTokens: 120_000).freshReason(for: rbook.sessions["acme:reviewer"]!, now: t0.addingTimeInterval(9 * 3600)) == nil,
+          "reuse: 0 이면 그 기준은 끔 (둘 다 0 이면 늘 이어 쓰기)")
+    var empty = WorkSessionBook()
+    check(empty.reuseId("nope", policy: policy, now: t0) == nil && empty.sessions.isEmpty, "reuse: 세션이 없으면 그대로 새로")
+    let oldSettings = try? JSONDecoder().decode(AppSettings.self, from: Data(#"{"repoDir": "/r"}"#.utf8))
+    let setSettings = try? JSONDecoder().decode(AppSettings.self, from: Data(#"{"sessionReuseMinutes": 0, "sessionReuseMaxTokens": -5}"#.utf8))
+    check(oldSettings?.sessionReuseMinutes == 55 && oldSettings?.sessionReuseMaxTokens == 120_000
+          && setSettings.map { SessionReuse(settings: $0) } == SessionReuse(idleMinutes: 0, maxTokens: 0), "reuse: 설정 기본값과 0(끔)")
+    check(ReviewEval.policy("always") == .always && ReviewEval.policy("default") == SessionReuse() && ReviewEval.policy("30,80000") == SessionReuse(idleMinutes: 30, maxTokens: 80_000)
+          && ReviewEval.policy("x") == nil && ReviewEval.policy("-1,5") == nil && ReviewEval.newLines("a\nb\nc", after: 2) == "c",
+          "eval: 세션 이어 쓰기 규칙 인자, 이번 실행에 생긴 기록만")
+    var ebook = WorkSessionBook()
+    let et = Date(timeIntervalSince1970: 1_800_000_000)
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "bad", ok: false, caseId: "c1", usage: nil, transcript: nil, now: et)
+    check(ebook.sessions.isEmpty && ebook.reuseId("acme:reviewer", policy: .always, now: et) == nil, "eval: 실패한 실행은 세션을 기록하지 않음 (다음 문제는 새로)")
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "s1", ok: true, caseId: "c2", usage: nil,
+                             transcript: (RunUsage(input: 1, cacheRead: 95_000), 96_000), now: et)
+    check(ebook.sessions["acme:reviewer"]?.contextTokens == 96_000 && ebook.reuseId("acme:reviewer", policy: SessionReuse(), now: et.addingTimeInterval(60)) == "s1",
+          "eval: 성공한 실행은 기록하고 끝 문맥으로 다음 판단")
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "s1", ok: false, caseId: "c3", usage: nil, transcript: nil, now: et.addingTimeInterval(120))
+    check(ebook.sessions["acme:reviewer"]?.keys == ["c2"], "eval: 이어 쓰다 실패해도 기록을 바꾸지 않음")
 }
 
 print("passed: \(passed), failed: \(failures)")

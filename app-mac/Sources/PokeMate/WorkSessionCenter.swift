@@ -25,6 +25,13 @@ final class WorkSessionCenter: ObservableObject {
         book.applyTranscript(repo: repo, usage: total.usage, lastContext: total.lastContext)
     }
 
+    func reuseSession(_ key: String) -> String? {
+        let before = book.sessions[key]
+        let id = book.reuseId(key, policy: SessionReuse(settings: AppPaths.loadSettings()), now: Date())
+        if book.sessions[key] != before { save() }
+        return id
+    }
+
     func refreshAllUsage() {
         for repo in book.sessions.keys { refreshUsage(repo) }
         save()
@@ -196,7 +203,7 @@ final class WorkSessionCenter: ObservableObject {
         if let i = queued[repo]?.firstIndex(of: key) { queued[repo]?.remove(at: i) }
         if queued[repo]?.isEmpty == true { queued[repo] = nil }
         running[repo] = key
-        let sessionId = book.resumeId(repo)
+        let sessionId = reuseSession(repo)
         var prompt = book.sessions[repo] == nil ? (takeSummary(repo).map { "## 이전 작업 세션 요약 (\(repo))\n\($0)\n\n" } ?? "") : prefix(for: repo)
         if sessionId != nil { prompt += Self.resumeNote + "\n\n" }
         let domains = DomainMap.load()
@@ -377,6 +384,7 @@ extension WorkSessionCenter {
         var config = PipelineConfig.load(promptsDir: Rules.promptsDir, access: pipelineTable(settings: settings), dir: PipelineState.dir(),
                                          helper: PipelineAccess.helper(settings: settings), fallbackDir: Rules.folder(.prompt, layer: .shared))
         config.domains = DomainMap.load()
+        config.notes = DomainNotes.load()
         let timeout = TimeInterval(max(1, start.timeoutMinutes) * 60)
         let io = PipelineIO(
             runRole: { [weak self] role, prompt, sessionId, newSessionId, access in
@@ -386,7 +394,7 @@ extension WorkSessionCenter {
             },
             helper: { args in await Self.runHelper(args, settings: settings) },
             diff: { worktree in await Self.worktreeDiff(worktree) },
-            sessionId: { [weak self] key in await self?.book.resumeId(key) },
+            sessionId: { [weak self] key in await self?.reuseSession(key) },
             recordSession: { [weak self] sessionKey, id, ticket, usage in
                 await self?.recordRoleSession(sessionKey, id: id, ticket: ticket, usage: usage)
             },
@@ -506,16 +514,16 @@ extension WorkSessionCenter {
         running[domain] = label
         reviewing[domain] = "\(label) · \(why)"
         let key = DomainReview.sessionKey(domain)
-        let sessionId = book.resumeId(key)
+        let sessionId = reuseSession(key)
         let map = DomainMap.load()
-        let memo = DomainReview.memoFile(domain)
-        let memoLines = ((try? String(contentsOf: memo, encoding: .utf8)) ?? "").split(separator: "\n").count
+        let notes = DomainNotes.load()
         var runAccess = access
-        runAccess.dirs += map.knowledgePaths(for: domain).filter { !runAccess.dirs.contains($0) }
+        runAccess.dirs += (map.knowledgePaths(for: domain) + [notes.root]).filter { !runAccess.dirs.contains($0) }
         let helper = PipelineAccess.helper(settings: AppPaths.loadSettings())
         let prompt = DomainReview.reviewPrompt(target: target, domain: domain, why: why, source: source, firstRun: sessionId == nil,
-                                               memo: memo, memoLines: memoLines, helper: helper,
-                                               context: context.replacingOccurrences(of: DomainMap.placeholder, with: map.knowledgeText(for: domain)))
+                                               notes: notes, helper: helper,
+                                               context: context.replacingOccurrences(of: DomainMap.placeholder, with: map.knowledgeText(for: domain))
+                                                   .replacingOccurrences(of: "{{helper}}", with: helper))
         let (response, usage) = await runOnce(chat: chat, title: "\(title) · \(key)", prompt: prompt, access: runAccess,
                                               timeout: alarm.automationTimeout, sessionId: sessionId, quiet: false,
                                               extraEnvironment: ["POKEMATE_REVIEW_REPO": target.fullName])

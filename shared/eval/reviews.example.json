@@ -1,0 +1,19 @@
+[
+  {
+    "id": "acme-coupon-boundary",
+    "fixture": "acme-coupon-boundary",
+    "mustFind": [
+      {"name": "최소 주문 금액과 같은 주문은 할인되지 않음 (> 를 >= 로)", "in": ["결함"], "all": [["최소 주문", "min_order"], ["같", "이상", "경계", ">="]]}
+    ],
+    "mustNotVerdict": ["승인"]
+  },
+  {
+    "id": "sample-web-1",
+    "url": "https://github.example.com/acme/sample-web/pull/1",
+    "domain": "acme",
+    "mustFind": [
+      {"name": "꼭 나와야 할 지적", "all": [["낱말", "다른 표현"], ["낱말"]]}
+    ],
+    "mustNotVerdict": ["승인"]
+  }
+]

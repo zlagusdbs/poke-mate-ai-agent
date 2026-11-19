@@ -27,6 +27,7 @@ let table = PipelineAccess.defaults(helper: helperText, workDir: root.appendingP
                                     references: NSHomeDirectory() + "/.claude/references", pipelines: pipelinesDir.path)
 var config = PipelineConfig.load(promptsDir: promptsDir, access: table, dir: pipelinesDir, helper: helperText)
 config.domains = DomainMap.load(from: root.appendingPathComponent("domains.json"))
+config.notes = DomainNotes(root: root.appendingPathComponent("notes").path)
 let issue = (try? JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("jira/\(key).json")))) as? [String: Any]
 let summary = (((issue?["issue"] as? [String: Any])?["fields"] as? [String: Any])?["summary"] as? String) ?? key
 let event = "다음 이벤트가 생겼다.\n- [\(key)] \(summary)\n- 나에게 할당된 이슈\n- 링크: https://jira.example.com/browse/\(key)"

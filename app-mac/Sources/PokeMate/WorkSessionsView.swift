@@ -177,9 +177,13 @@ struct WorkTabView: View {
     private func captionView(_ s: WorkSession) -> Text {
         let threshold = model.settings.workSessionAlertPercent
         if s.id.isEmpty {
+            if let reason = s.freshReason {
+                return Text("새로 시작: \(reason) · 다음 실행에서 노트·지식부터 읽어요").foregroundColor(.secondary)
+            }
             return Text("새로 만듦 · 첫 메시지에서 레포 지식을 모아요").foregroundColor(.secondary)
         }
         var text = Text("마지막 \(s.lastUsed.formatted(Self.clock)) · 티켓 \(s.keys.count)").foregroundColor(.secondary)
+        if let reason = s.freshReason { text = text + Text(" · 새로 시작: \(reason)").foregroundColor(.secondary) }
         if let p = s.contextPercent {
             text = text + Text(" · ").foregroundColor(.secondary)
                 + Text("문맥 \(p)%").foregroundColor(threshold > 0 && p >= threshold ? .orange : .secondary)

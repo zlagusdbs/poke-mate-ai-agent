@@ -865,27 +865,235 @@ def cmd_gh_file(args):
 
 DOMAIN_NAME = re.compile(r"^[^/\\:\s.][^/\\:\s]*$")
 MEMO_WARN_LINES = 300
+NOTE_KINDS = ("용어집", "업무 규칙", "장애", "함정", "결정", "동작")
+NOTES_FRAME = """# {domain} — 확인한 사실
+
+쓰는 규칙은 `../README.md`. 한 줄에 사실 하나, 끝에 근거와 날짜.
+
+## 용어집 (업무 용어 ↔ 코드 이름 ↔ 별칭)
+
+## 업무 규칙 (규칙, 예외, 근거)
+
+## 장애 (증상, 원인, 조치, 재발 방지)
+
+## 함정 (이렇게 하면 터진다, 왜, 대신 이렇게)
+
+## 결정 (무엇을, 왜, 버린 대안)
+
+## 동작 (코드로 확인한 구조·흐름)
+"""
+CHECKLIST_FRAME = """# {domain} — 점검표 (초안, 사람 확인 전)
+
+이 도메인을 건드리는 **개발과 리뷰 모두** 이 질문에 하나씩 답한다.
+답은 셋 중 하나: `해당 없음` / `확인함 (근거)` / `미확인 (무엇을 누구에게 물어야 하는지)`.
+미확인이 하나라도 있으면 리뷰는 승인하지 않고, 개발은 멈추고 묻는다.
+
+| # | 질문 | 왜 묻나 |
+|---|---|---|
+
+## 사람이 확인할 것
+- 아직 질문이 없다. 이 도메인을 건드릴 때 반드시 답할 질문을 채워 달라.
+- 확정되면 맨 위의 "(초안, 사람 확인 전)"을 지운다.
+"""
+
+
+def notes_root():
+    from pathlib import Path
+    configured = os.environ.get("POKEMATE_NOTES_DIR") or settings().get("domainNotesDir")
+    if configured:
+        return Path(os.path.expanduser(configured))
+    if trial_dir():
+        return Path(trial_dir()) / "notes"
+    return Path(HOME) / ".claude" / "references" / "notes"
+
+
+def ensure_domain_notes(domain):
+    folder = notes_root() / domain
+    created = []
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, frame in (("checklist.md", CHECKLIST_FRAME), ("notes.md", NOTES_FRAME)):
+        path = folder / name
+        if not path.exists():
+            path.write_text(frame.format(domain=domain), encoding="utf-8")
+            created.append(name)
+    if created:
+        print(f"created {folder}: {'·'.join(created)} 빈 틀. 이 도메인의 점검표가 아직 없어요(사람이 채울 때까지 초안). 결과와 알림에 알린다")
+    return folder
+
+
+def insert_note(lines, kind, entry):
+    head = next((i for i, line in enumerate(lines) if line == f"## {kind}" or line.startswith(f"## {kind} ")), None)
+    if head is None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines += ["", f"## {kind}"]
+        head = len(lines) - 1
+    end = next((i for i in range(head + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    pos = next((i + 1 for i in range(end - 1, head, -1) if lines[i].strip()), head + 1)
+    lines.insert(pos, entry)
+    if pos + 1 < len(lines) and lines[pos + 1].startswith("## "):
+        lines.insert(pos + 1, "")
+    return lines
 
 
 def cmd_domain_note(args):
-    from .connections import local_dir
     if not DOMAIN_NAME.match(args.domain):
         raise SystemExit("bad domain name")
-    text = " ".join(args.text.split())
-    if not text:
+    if args.domain == "default":
+        raise SystemExit("도메인을 정하지 못한 건(default)은 노트를 남기지 않아요")
+    text = " ".join((args.text or "").split())
+    if not text and not args.init:
         raise SystemExit("empty note")
-    folder = local_dir() / "domains"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{args.domain}.md"
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else [f"# {args.domain} 도메인 메모", ""]
+    if text and not (args.kind and args.source):
+        raise SystemExit("--kind 와 --source 가 필요해요")
+    folder = ensure_domain_notes(args.domain)
+    if not text:
+        print(f"ready {folder}")
+        return 0
+    path = folder / "notes.md"
+    lines = path.read_text(encoding="utf-8").splitlines()
     if any(line.startswith(f"- {text} (") for line in lines):
         print(f"skipped: already noted ({path})")
         return 0
-    lines.append(f"- {text} (출처: {args.source}, {now().strftime('%Y-%m-%d')})")
+    insert_note(lines, args.kind, f"- {text} (출처: {args.source}, {now().strftime('%Y-%m-%d')})")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    count = sum(1 for line in lines if line.startswith("- "))
-    print(f"noted {path} ({count}줄)" + (f" · {MEMO_WARN_LINES}줄이 넘었어요. 정리가 필요해요" if count > MEMO_WARN_LINES else ""))
+    count = len(lines)
+    print(f"noted {path} [{args.kind}] ({count}줄)" + (f" · {MEMO_WARN_LINES}줄이 넘었어요. 사람에게 알린다(주제별로 나누거나 팀 KB 로)" if count > MEMO_WARN_LINES else ""))
     return 0
+
+
+def cmd_domain_map(args):
+    args.topic = "-".join(args.topic.split())
+    for value, label in ((args.domain, "domain"), (args.topic, "topic")):
+        if not DOMAIN_NAME.match(value):
+            raise SystemExit(f"bad {label} name")
+    if args.domain == "default":
+        raise SystemExit("도메인을 정하지 못한 건(default)은 지도를 남기지 않아요")
+    with open(os.path.expanduser(args.body_file), encoding="utf-8") as f:
+        body = f.read().strip()
+    if not body:
+        raise SystemExit("empty map")
+    folder = ensure_domain_notes(args.domain) / "maps"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{args.topic}.md"
+    existed = path.exists()
+    if not body.startswith("# "):
+        body = f"# {args.topic}\n\n{body}"
+    path.write_text(f"{body}\n\n갱신: {now().strftime('%Y-%m-%d')} · 출처: {args.source}\n", encoding="utf-8")
+    lines = path.read_text(encoding="utf-8").count("\n")
+    print(f"{'updated' if existed else 'created'} {path} ({lines}줄)")
+    return 0
+
+
+EVAL_READ_ONLY = {"gh-get", "gh-diff", "gh-file", "git-read", "jira-get", "jira-search", "jira-comments", "jira-links", "eval-score"}
+EVAL_SECTIONS = ("확인한 범위", "참고한 근거", "점검표", "결함", "미확인(질문)", "미확인", "버린 후보와 이유", "제안", "판정", "점검표 추가 제안")
+EVAL_BLOCK = re.compile(r"```pokemate-eval[ \t]*\n(.*?)```", re.S)
+EVAL_HEAD = re.compile(r"^[\s#*>\-]*(" + "|".join(re.escape(n) for n in sorted(EVAL_SECTIONS, key=len, reverse=True)) + r")\s*[*]*\s*(?::|：|$)(.*)$")
+
+
+def eval_blocked(args):
+    if not os.environ.get("POKEMATE_EVAL"):
+        return None
+    if args.cmd in EVAL_READ_ONLY or (args.cmd == "review-state" and getattr(args, "check", False)):
+        return None
+    return f"평가 실행이라 쓰기 명령은 막혀 있어요: {args.cmd}"
+
+
+def eval_sections(text):
+    blocks = EVAL_BLOCK.findall(text)
+    body = blocks[-1] if blocks else text
+    sections, current = {}, None
+    for line in body.splitlines():
+        m = EVAL_HEAD.match(line)
+        if m:
+            current = "미확인(질문)" if m.group(1) == "미확인" else m.group(1)
+            rest = m.group(2).strip()
+            sections.setdefault(current, [])
+            if rest:
+                sections[current].append(rest)
+        elif current:
+            sections[current].append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+def eval_verdict(text):
+    patterns = {"확신할 수 없음": r"확신할 수 없음", "댓글": r"댓글", "승인": r"승인(?!\s*하지|\s*안\s|\s*불가)"}
+    hits = [(m.start(), name) for name, pat in patterns.items() for m in [re.search(pat, text)] if m]
+    return min(hits)[1] if hits else None
+
+
+def eval_score_case(case, text):
+    sec = eval_sections(text)
+    unsure = "\n".join(line for line in sec.get("점검표", "").splitlines() if "미확인" in line)
+    parts = {"결함": sec.get("결함", ""), "미확인": sec.get("미확인(질문)", "") + "\n" + unsure}
+    found, missed = [], []
+    for item in case.get("mustFind") or []:
+        scope = "\n".join(parts.get(name, "") for name in (item.get("in") or ["결함", "미확인"])).lower()
+        groups = item.get("all") or []
+        hit = bool(groups) and all(any(w.lower() in scope for w in group) for group in groups)
+        (found if hit else missed).append(item.get("name") or "/".join(groups[0] if groups else []))
+    verdict = eval_verdict(sec.get("판정", ""))
+    depth = next((d for d in ("가볍게", "보통", "깊게") if d in sec.get("확인한 범위", "")), None)
+    bad = [v for v in case.get("mustNotVerdict") or [] if v == verdict]
+    if case.get("expectVerdict") and verdict != case["expectVerdict"]:
+        bad.append(f"기대 {case['expectVerdict']}")
+    if case.get("expectDepth") and depth != case["expectDepth"]:
+        bad.append(f"깊이 기대 {case['expectDepth']}")
+    return {"verdict": verdict, "depth": depth, "found": found, "missed": missed, "violations": bad,
+            "sections": sorted(sec), "pass": not missed and not bad and verdict is not None}
+
+
+def eval_session_text(row):
+    if "resumed" not in row:
+        return "-"
+    if row["resumed"]:
+        return "이어 쓰기"
+    return "새로" + (f" ({row['freshReason']})" if row.get("freshReason") else "")
+
+
+def cmd_eval_score(args):
+    with open(os.path.expanduser(args.cases), encoding="utf-8") as f:
+        cases = json.load(f)
+    results = os.path.expanduser(args.results)
+    rows = []
+    for case in cases:
+        if args.case and case.get("id") not in args.case:
+            continue
+        path = os.path.join(results, f"{case['id']}.md")
+        meta_path = os.path.join(results, f"{case['id']}.json")
+        meta = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        if not os.path.exists(path):
+            rows.append({"id": case["id"], "result": None, "pass": False, "note": "결과 없음", **meta})
+            continue
+        with open(path, encoding="utf-8") as f:
+            score = eval_score_case(case, f.read())
+        rows.append({"id": case["id"], "result": path, **meta, **score})
+    label = args.label or os.path.basename(results.rstrip("/"))
+    head = ["문제", "통과", "판정", "깊이", "맞힘", "놓침", "위반", "비용", "시간", "세션", "끝 문맥", "스킬", "결과 원문"]
+    lines = [f"# 리뷰 기준 문제 채점 · {label}", "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    for r in rows:
+        total = len(r.get("found", [])) + len(r.get("missed", []))
+        cells = [r["id"], "O" if r.get("pass") else "X", r.get("verdict") or r.get("note") or "-", r.get("depth") or "-",
+                 f"{len(r.get('found', []))}/{total}", ", ".join(r.get("missed", [])) or "-", ", ".join(r.get("violations", [])) or "-",
+                 f"${r['costUSD']:.2f}" if isinstance(r.get("costUSD"), (int, float)) else "-",
+                 f"{r['seconds'] / 60:.1f}분" if isinstance(r.get("seconds"), (int, float)) else "-",
+                 eval_session_text(r), f"{r['contextAfter'] // 1000}k" if isinstance(r.get("contextAfter"), int) else "-",
+                 ",".join(r.get("skills") or []) or "-", r.get("result") or "-"]
+        lines.append("| " + " | ".join(str(c).replace("|", "/") for c in cells) + " |")
+    passed = sum(1 for r in rows if r.get("pass"))
+    cost = sum(r.get("costUSD") or 0 for r in rows if isinstance(r.get("costUSD"), (int, float)))
+    lines += ["", f"통과 {passed}/{len(rows)} · 비용 합계 ${cost:.2f}"]
+    out = os.path.expanduser(args.out or results)
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "score.json"), "w", encoding="utf-8") as f:
+        json.dump({"label": label, "rows": rows}, f, ensure_ascii=False, indent=1)
+    with open(os.path.join(out, "score.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    return 0 if passed == len(rows) else 1
 
 
 def cmd_gh_review(args):
@@ -1305,11 +1513,20 @@ def main(argv=None):
     gf.add_argument("--path", required=True, help="파일 또는 폴더 경로")
     gf.set_defaults(func=cmd_gh_file)
 
-    dn = sub.add_parser("domain-note", help="도메인 메모(local/domains/{도메인}.md)에 확인한 사실 한 줄 추가", description="도메인 메모(local/domains/{도메인}.md)에 확인한 사실 한 줄 추가")
+    dn = sub.add_parser("domain-note", help="도메인 노트(노트 폴더/{도메인}/notes.md)의 종류별 절에 확인한 사실 한 줄 추가", description="도메인 노트(노트 폴더/{도메인}/notes.md)의 종류별 절에 확인한 사실 한 줄 추가. 노트 폴더는 automation 설정 domainNotesDir(기본 ~/.claude/references/notes). 도메인 폴더가 없으면 checklist.md·notes.md 빈 틀을 만든다")
     dn.add_argument("--domain", required=True, help="도메인 이름")
-    dn.add_argument("--source", required=True, help="출처 (예: sample-web#123, ACME-1)")
-    dn.add_argument("--text", required=True, help="코드·문서로 확인한 사실과 근거")
+    dn.add_argument("--kind", choices=NOTE_KINDS, help="종류: " + "|".join(NOTE_KINDS))
+    dn.add_argument("--source", help="출처 (예: sample-web#123, ACME-1)")
+    dn.add_argument("--text", help="코드·문서로 확인한 사실과 근거")
+    dn.add_argument("--init", action="store_true", help="쓰지 않고 도메인 폴더 빈 틀만 준비")
     dn.set_defaults(func=cmd_domain_note)
+
+    dm = sub.add_parser("domain-map", help="도메인 지도(노트 폴더/{도메인}/maps/{주제}.md)를 본문 파일로 만들거나 갱신본으로 바꿈 (git 은 부르지 않음)", description="도메인 지도(노트 폴더/{도메인}/maps/{주제}.md)를 본문 파일로 만들거나 갱신본으로 바꾼다. 같은 주제가 있으면 통째로 바꾸고 이전 것은 노트 저장소의 Git 이 보관한다. git 은 부르지 않는다")
+    dm.add_argument("--domain", required=True, help="도메인 이름")
+    dm.add_argument("--topic", required=True, help="주제 (파일 이름, 슬래시·점으로 시작 금지)")
+    dm.add_argument("--body-file", required=True, help="지도 본문 파일 (write-note 로 쓴 경로)")
+    dm.add_argument("--source", required=True, help="출처 (예: ACME-1)")
+    dm.set_defaults(func=cmd_domain_map)
 
     gr = sub.add_parser("gh-review", help="리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절)", description="리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절)")
     gr.add_argument("--repo", required=True, help="owner/repo")
@@ -1382,7 +1599,18 @@ def main(argv=None):
     da.add_argument("--dry-run", action="store_true", help="승인하지 않고 대상만 출력")
     da.set_defaults(func=cmd_deploy_approve)
 
+    es = sub.add_parser("eval-score", help="리뷰 기준 문제 채점: 결과 문서(스킬 6절 형식)에서 꼭 나와야 할 지적·판정을 보고 표로 남김", description="리뷰 기준 문제 채점: 결과 문서(스킬 6절 형식)에서 꼭 나와야 할 지적·판정을 보고 표로 남김. 결과 폴더의 {문제 id}.md(와 실행 정보 {문제 id}.json)를 읽어 score.md·score.json 을 쓴다")
+    es.add_argument("--cases", required=True, help="문제 묶음 JSON (예: local/eval/reviews.json)")
+    es.add_argument("--results", required=True, help="결과 폴더 ({문제 id}.md)")
+    es.add_argument("--case", action="append", help="이 문제만 (여러 번 가능)")
+    es.add_argument("--label", help="표 제목에 붙일 이름 (예: 데스크톱)")
+    es.add_argument("--out", help="score 파일을 쓸 폴더 (기본: 결과 폴더)")
+    es.set_defaults(func=cmd_eval_score)
+
     args = p.parse_args(argv)
+    blocked = eval_blocked(args)
+    if blocked:
+        raise SystemExit(blocked)
     return args.func(args)
 
 
