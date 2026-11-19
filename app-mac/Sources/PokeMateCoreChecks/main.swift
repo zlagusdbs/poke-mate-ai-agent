@@ -1050,6 +1050,10 @@ do {
 }
 
 // MARK: Jira 역할 파이프라인
+extension PipelineState.Arrival {
+    var isSkip: Bool { if case .skip = self { return true } else { return false } }
+}
+
 actor PipelineScript {
     var answers: [PipelineRole: [String]]
     var prompts: [(PipelineRole, String, ClaudeCommand.WriteAccess)] = []
@@ -1264,6 +1268,18 @@ do {
     let kprompts = await kscript.prompts
     check(kprompts.first?.1.contains("지식:\n   - `~/Workspace/acme-kb`") == true && kprompts.first?.1.contains("{{knowledge}}") == false
           && kprompts.first?.2.dirs.contains("/u/Workspace/acme-kb") == true, "knowledge: 프롬프트 자리표시 치환, 읽기 폴더에 추가")
+
+    let bc = PipelineScript([.pm: [nextBlock("stop", #", "note": "프로젝트 단위 개발 건: 자동 처리 안 함""#)]])
+    let bcState = await JiraPipeline.run(start, io: pipelineIO(bc), config: config)
+    let bcHelpers = await bc.helpers
+    let bcNotices = await bc.notices
+    let bcPrompts = await bc.prompts
+    check(bcState.stage == .done && bcHelpers.isEmpty && bcNotices.isEmpty && bcPrompts.count == 1,
+          "pipeline: PM 이 처리 안 하고 stop 하면 정상 종료 (앱은 blocked 알림을 따로 보내지 않음, 알림은 PM 이 한 번)")
+    check(PipelineState.arrival(of: nil) == .start && PipelineState.arrival(of: limited) == .resume
+          && PipelineState.arrival(of: bcState) == .skip("이미 처리함: ACME-1 · done")
+          && PipelineState.arrival(of: cut) == .skip("이미 처리 중: ACME-1 · dev")
+          && PipelineState.arrival(of: stopped).isSkip, "pipeline: 끝난 티켓은 다시 잡지 않음, 답 기다리던 티켓만 이어 감")
 
     var shown = start
     shown.stage = .tester

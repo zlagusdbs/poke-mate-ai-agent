@@ -389,7 +389,14 @@ def person(p):
     return {"name": p.get("name"), "key": p.get("key"), "displayName": p.get("displayName")}
 
 
-def flat_issue(raw, base_url="", epic_field=None):
+def link_key(value):
+    if isinstance(value, dict):
+        inner = value.get("data") if isinstance(value.get("data"), dict) else value
+        return inner.get("key") or inner.get("issueKey") or None
+    return value or None
+
+
+def flat_issue(raw, base_url="", epic_field=None, parent_field=None):
     f = raw.get("fields") or {}
     links = []
     for link in f.get("issuelinks") or []:
@@ -406,6 +413,7 @@ def flat_issue(raw, base_url="", epic_field=None):
         "reporter": person(f.get("reporter")),
         "priority": (f.get("priority") or {}).get("name"),
         "epicLink": f.get(epic_field) if epic_field else None,
+        "parentLink": link_key(f.get(parent_field)) if parent_field else None,
         "labels": f.get("labels") or [],
         "components": [c.get("name") for c in f.get("components") or []],
         "created": f.get("created"),
@@ -693,7 +701,8 @@ def print_json(data):
 def cmd_jira_get(args):
     client = jira()
     epic = client.field_id("Epic Link")
-    return print_json(flat_issue(client.get_issue(args.key), client.base_url, epic))
+    parent = client.field_id("Parent Link")
+    return print_json(flat_issue(client.get_issue(args.key), client.base_url, epic, parent))
 
 
 def cmd_jira_search(args):

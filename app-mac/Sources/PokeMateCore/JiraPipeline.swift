@@ -216,6 +216,15 @@ public struct PipelineState: Codable, Equatable, Sendable {
 
     public var isActive: Bool { [.pm, .dev, .tester, .reviewer, .branch, .push].contains(stage) }
 
+    public enum Arrival: Equatable, Sendable { case start, resume, skip(String) }
+
+    public static func arrival(of existing: PipelineState?) -> Arrival {
+        guard let existing else { return .start }
+        if existing.stage == .waiting { return .resume }
+        if existing.isActive { return .skip("이미 처리 중: \(existing.statusText)") }
+        return .skip("이미 처리함: \(existing.statusText)\(existing.reason.map { " · \($0)" } ?? "")")
+    }
+
     public var role: PipelineRole? { PipelineRole(rawValue: stage.rawValue) }
 
     public var totalCost: Double { costs.values.reduce(0, +) }

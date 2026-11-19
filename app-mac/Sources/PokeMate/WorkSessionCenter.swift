@@ -291,18 +291,20 @@ extension WorkSessionCenter {
                         completion: @escaping (ClaudeResponse, RunUsage?) -> Void) {
         let key = Self.issueKey(item)
         let event = Self.pipelineEvent(item)
-        if var state = PipelineState.load(key: key) {
-            if state.stage == .waiting {
-                state.resume(now: Date())
-                state.event = event
-                state.save()
-                enqueuePipeline(state, chat: chat, completion: completion)
-                return
-            }
-            if state.isActive {
-                completion(.success(text: "이미 처리 중: \(state.statusText)", sessionId: ""), nil)
-                return
-            }
+        let existing = PipelineState.load(key: key)
+        switch PipelineState.arrival(of: existing) {
+        case .resume:
+            guard var state = existing else { break }
+            state.resume(now: Date())
+            state.event = event
+            state.save()
+            enqueuePipeline(state, chat: chat, completion: completion)
+            return
+        case .skip(let why):
+            completion(.success(text: why, sessionId: ""), nil)
+            return
+        case .start:
+            break
         }
         let table = pipelineTable(settings: AppPaths.loadSettings())
         var readOnly = table[.pm] ?? ClaudeCommand.WriteAccess()
