@@ -1501,6 +1501,30 @@ do {
                       #"{"type":"user","message":{"content":"x"}}"#,
                       #"{"type":"assistant","message":{"content":[{"type":"text","text":"a"},{"type":"tool_use","name":"Skill","input":{"skill":"code-review","args":"high"}},{"type":"tool_use","name":"Bash","input":{}}]}}"#].joined(separator: "\n")
     check(ReviewEval.skillsUsed(transcript: transcript) == ["domain-review", "code-review"], "eval: 기록에서 부른 스킬 찾기 (스킬 안에서 부른 것 포함)")
+    let fixtureCases = ReviewEval.loadCases(Data(#"[{"id": "acme-coupon-boundary", "fixture": "acme-coupon-boundary"}, {"id": "bad", "fixture": "../x"}, {"id": "dot", "fixture": ".x"}]"#.utf8))
+    check(fixtureCases.map(\.id) == ["acme-coupon-boundary"] && fixtureCases[0].fixture == "acme-coupon-boundary" && fixtureCases[0].url.isEmpty,
+          "eval: 가상 레포 문제 읽기 (경로 넘는 이름 거절)")
+    let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let fixtureDir = ReviewEval.fixtureDir("acme-coupon-boundary", local: repoRoot.appendingPathComponent("no-local"), shared: repoRoot.appendingPathComponent("shared"))
+    let fixture = fixtureDir.flatMap { ReviewEval.loadFixture($0) }
+    check(fixture?.key == "ACME-201" && fixture?.repo == "acme-sample-coupon" && fixture?.brief.contains("이상이면 할인") == true
+          && FileManager.default.fileExists(atPath: fixtureDir!.appendingPathComponent("head/coupon.py").path),
+          "eval: shared 의 가상 레포 문제 파일")
+    if let fixture {
+        let fmap = DomainMap.parse(Data(#"{"acme": {"repos": ["acme-sample-coupon"]}}"#.utf8))
+        let fstate = ReviewEval.fixtureState(fixture, domain: ReviewEval.fixtureDomain(fixtureCases[0], fixture: fixture, map: fmap), worktree: "/w/W", now: Date())
+        check(fstate.domain == "acme" && fstate.stage == .reviewer && fstate.testsPassed && fstate.worktree == "/w/W" && fstate.brief == fixture.brief
+              && fstate.allowed(for: .reviewer).contains(.pm), "eval: 가상 레포 문제는 리뷰어 단계 상태로 시작")
+        let fconfig = PipelineConfig(prompts: [.reviewer: "리뷰어 지시"], common: "공통", access: [:], dir: URL(fileURLWithPath: "/w"),
+                                     notes: DomainNotes(root: "/n", lines: { _ in 3 }, maps: { _ in [] }))
+        let fprompt = JiraPipeline.prompt(role: .reviewer, state: fstate, config: fconfig, resumed: false, diffFile: "/w/ACME-201.diff") + "\n\n" + ReviewEval.pipelineTail
+        check(fprompt.contains("리뷰할 변경(diff 파일): /w/ACME-201.diff") && fprompt.contains("## PM 개발 지시서") && fprompt.contains("```pokemate-eval")
+              && fprompt.contains("domain-note 는 하지 않는다"), "eval: 가상 레포 문제는 Jira 리뷰어 프롬프트 + 평가 끝맺음")
+    }
+    let raccess = ReviewEval.reviewerAccess(helper: "H", worktree: "/w/W", dirs: ["/ws", "/refs", "/n"])
+    check(raccess.tools.contains("Skill(domain-review)") && raccess.tools.contains("Skill(code-review)") && raccess.tools.contains("Bash(H git-read:*)")
+          && !raccess.tools.contains { $0.contains("domain-note") || $0.contains("domain-map") || $0.hasPrefix("Edit(") || $0.hasPrefix("Write(") }
+          && ["/ws", "/refs", "/n", "/w/W"].allSatisfy(raccess.dirs.contains), "eval: 가상 레포 리뷰어는 읽기·스킬만, 쓰기 없음")
 }
 
 print("passed: \(passed), failed: \(failures)")

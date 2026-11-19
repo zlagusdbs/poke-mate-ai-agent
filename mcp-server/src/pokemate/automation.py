@@ -1024,10 +1024,11 @@ def eval_verdict(text):
 
 def eval_score_case(case, text):
     sec = eval_sections(text)
-    scope = "\n".join([sec.get("결함", ""), sec.get("미확인(질문)", "")]
-                      + [line for line in sec.get("점검표", "").splitlines() if "미확인" in line]).lower()
+    unsure = "\n".join(line for line in sec.get("점검표", "").splitlines() if "미확인" in line)
+    parts = {"결함": sec.get("결함", ""), "미확인": sec.get("미확인(질문)", "") + "\n" + unsure}
     found, missed = [], []
     for item in case.get("mustFind") or []:
+        scope = "\n".join(parts.get(name, "") for name in (item.get("in") or ["결함", "미확인"])).lower()
         groups = item.get("all") or []
         hit = bool(groups) and all(any(w.lower() in scope for w in group) for group in groups)
         (found if hit else missed).append(item.get("name") or "/".join(groups[0] if groups else []))

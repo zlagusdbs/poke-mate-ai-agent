@@ -744,3 +744,12 @@ def test_domain_map_creates_then_replaces(env, capsys, tmp_path):
         run("domain-map", "--domain", "acme", "--topic", "빈 지도", "--body-file", str(body), "--source", "s")
     calls = env[0].calls
     assert not any(c[0][:1] == ["git"] for c in calls)
+
+
+def test_eval_score_limits_find_to_named_sections():
+    case = {"id": "acme-coupon-boundary", "fixture": "acme-coupon-boundary", "mustNotVerdict": ["승인"],
+            "mustFind": [{"name": "최소 주문 경계", "in": ["결함"], "all": [["최소 주문"], ["같", ">="]]}]}
+    as_question = "확인한 범위: 깊게\n결함: 없음\n미확인(질문): 최소 주문 금액과 같은 주문도 할인해야 하나요?\n판정: 댓글\n"
+    as_defect = "확인한 범위: 깊게\n결함: coupon.py:2 — 주문 금액이 최소 주문 금액과 같으면 할인 0 → >= 로\n미확인(질문): 없음\n판정: 댓글\n"
+    assert automation.eval_score_case(case, as_question)["missed"] == ["최소 주문 경계"]
+    assert automation.eval_score_case(case, as_defect)["pass"]

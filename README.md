@@ -145,7 +145,8 @@ GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + �
 
 프롬프트·스킬·노트를 바꾼 뒤 자동 리뷰가 나빠졌는지 보려고, 답을 아는 PR 을 모아 같은 경로로 다시 돌려 본다.
 
-1. **문제 묶음**: `local/eval/reviews.json` (Git 밖). 문제마다 `id`, `url`(PR 주소), `domain`(비우면 domains.json·기록으로 정함), `mustFind`(꼭 나와야 할 지적: `{"name": "…", "all": [["낱말", "다른 표현"], ["낱말"]]}` — 묶음마다 하나 이상이 결함·미확인 절에 나오면 맞힘), `mustNotVerdict`(나오면 안 되는 판정, 예: `["승인"]`), 선택 `expectVerdict`·`expectDepth`(가볍게·보통·깊게).
+1. **문제 묶음**: `local/eval/reviews.json` (Git 밖). 문제마다 `id`, `url`(PR 주소), `domain`(비우면 domains.json·기록으로 정함), `mustFind`(꼭 나와야 할 지적: `{"name": "…", "all": [["낱말", "다른 표현"], ["낱말"]]}` — 묶음마다 하나 이상이 결함·미확인 절에 나오면 맞힘), `mustNotVerdict`(나오면 안 되는 판정, 예: `["승인"]`), 선택 `expectVerdict`·`expectDepth`(가볍게·보통·깊게). `mustFind` 항목에 `"in": ["결함"]` 을 주면 그 절에서만 찾는다(미확인으로만 낸 것은 놓침). 예시는 `shared/eval/reviews.example.json`.
+   - **가상 레포 문제**: `url` 대신 `"fixture": "이름"` 을 쓰면 `local/eval/fixtures/이름/`(없으면 `shared/eval/fixtures/이름/`)의 `case.json`(티켓 키·제목·레포·브랜치·PM 개발 지시서·앞 단계 말), `base/`(기준 파일), `head/`(바뀐 파일)로 가상 레포와 작업 폴더를 만들고, Jira 역할 처리의 리뷰어 경로(지시서 + diff 파일 + 작업 폴더)로 리뷰한다. `shared/eval/fixtures/acme-coupon-boundary` 는 최소 주문 금액 경계값 결함(`>` 를 `>=` 로)을 하나 심은 문제다.
 2. **실행**: `app-mac/scripts/review-eval.sh [묶음 파일] [--case id]` 가 문제마다 새 세션으로 실제 자동 리뷰와 같은 프롬프트(github-review + 도메인 리뷰어 안내 + 공유 노트)와 domain-review 스킬로 리뷰한다. 쓰기는 두 겹으로 막는다: 허용 목록에 읽기 명령(gh-get·gh-diff·gh-file·git-read·jira-get·jira-comments)과 스킬만 넣고, `POKEMATE_EVAL=1` 이면 helper 가 쓰기 명령을 모두 거절한다. 결과 문서는 답 끝 `pokemate-eval` 블록으로 받는다.
 3. **결과**: `local/eval/runs/{시각}/` 에 문제마다 답 원문(`{id}.md`)·실행 정보(`{id}.json`: 비용·시간·토큰·부른 스킬)와 채점표(`score.md`·`score.json`: 통과·판정·깊이·맞힘/놓침·위반·비용·시간·스킬·원문 경로). 핵심어 일치라 표현이 다르면 놓침으로 나올 수 있으니 원문을 같이 본다.
 4. **데스크톱과 비교**: 데스크톱에서 같은 PR 을 domain-review 스킬로 리뷰한 결과 문서를 한 폴더에 `{id}.md` 로 두고 `pokemate auto eval-score --cases local/eval/reviews.json --results {폴더} --label 데스크톱` 으로 같은 표를 만든다.

@@ -1,0 +1,8 @@
+{
+  "key": "ACME-201",
+  "title": "쿠폰 최소 주문 금액·최대 할인액 적용",
+  "repo": "acme-sample-coupon",
+  "branch": "feature/ACME-201",
+  "brief": "무엇을 왜: 쿠폰에 최소 주문 금액과 최대 할인액 조건을 넣는다 (티켓 ACME-201)\n바꿀 파일: coupon.py, tests/test_coupon.py\n바꾸는 방법: is_applicable(order_amount, coupon) 를 만들고 discount_amount 에서 쓴다. 할인액은 max_discount 를 넘지 않게 자른다\n완료 조건:\n1. 주문 금액이 최소 주문 금액(min_order_amount) 이상이면 할인한다. 미만이면 할인액 0\n2. 할인액은 max_discount 를 넘지 않는다\n3. 조건마다 tests/test_coupon.py 에 unittest 테스트가 있다\n테스트 방법: python3 -m unittest discover -s tests -v\n점검표 답: 2(금액·비율 값) — 확인함(완료 조건 1·2), 나머지 — 해당 없음\n하지 말 것: 할인율 계산 방식(원 단위 내림) 변경",
+  "note": "테스터 통과 확인 (3/3). 리뷰 범위: coupon.py is_applicable·discount_amount 와 테스트, 완료 조건 1~3."
+}
