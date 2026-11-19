@@ -28,7 +28,7 @@ def trial(tmp_path, monkeypatch):
 
 
 def stored(root):
-    return json.loads((root / "jira" / "ACME-1.json").read_text())
+    return json.loads((root / "jira" / "ACME-1.json").read_text(encoding="utf-8"))
 
 
 def test_trial_settings_overlay(trial):
