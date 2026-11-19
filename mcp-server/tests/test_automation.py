@@ -720,3 +720,27 @@ def test_eval_mode_blocks_writes(env, monkeypatch, tmp_path):
     assert automation.eval_blocked(Namespace(cmd="gh-review")) and automation.eval_blocked(Namespace(cmd="commit-push"))
     monkeypatch.delenv("POKEMATE_EVAL")
     assert automation.eval_blocked(Namespace(cmd="gh-review")) is None
+
+
+def test_domain_map_creates_then_replaces(env, capsys, tmp_path):
+    body = tmp_path / "map.md"
+    body.write_text("## 관련 저장소\n- sample-api: 쿠폰 조회 진입점\n", encoding="utf-8")
+    assert run("domain-map", "--domain", "acme", "--topic", "쿠폰함 조회", "--body-file", str(body), "--source", "ACME-1") == 0
+    path = tmp_path / "notes" / "acme" / "maps" / "쿠폰함-조회.md"
+    out = capsys.readouterr().out
+    assert "created" in out and (tmp_path / "notes" / "acme" / "checklist.md").exists()
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# 쿠폰함-조회\n\n## 관련 저장소") and text.rstrip().endswith("출처: ACME-1")
+    body.write_text("# 쿠폰함 조회\n\n## 관련 저장소\n- sample-api\n- sample-web\n", encoding="utf-8")
+    assert run("domain-map", "--domain", "acme", "--topic", "쿠폰함 조회", "--body-file", str(body), "--source", "ACME-2") == 0
+    assert "updated" in capsys.readouterr().out
+    text = path.read_text(encoding="utf-8")
+    assert "- sample-web" in text and "ACME-1" not in text and text.count("# 쿠폰함 조회") == 1
+    for domain, topic in (("acme", "../x"), ("acme", ".hidden"), ("default", "t"), ("a/b", "t")):
+        with pytest.raises(SystemExit):
+            run("domain-map", "--domain", domain, "--topic", topic, "--body-file", str(body), "--source", "s")
+    body.write_text("  \n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        run("domain-map", "--domain", "acme", "--topic", "빈 지도", "--body-file", str(body), "--source", "s")
+    calls = env[0].calls
+    assert not any(c[0][:1] == ["git"] for c in calls)

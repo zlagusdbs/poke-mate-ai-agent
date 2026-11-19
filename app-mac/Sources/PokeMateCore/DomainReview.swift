@@ -143,10 +143,22 @@ public struct DomainNotes: Equatable, Sendable {
 
     public let root: String
     public let lines: @Sendable (String) -> Int?
+    public let maps: @Sendable (String) -> [String]
 
-    public init(root: String, lines: @escaping @Sendable (String) -> Int? = DomainNotes.countLines) {
+    public init(root: String, lines: @escaping @Sendable (String) -> Int? = DomainNotes.countLines,
+                maps: @escaping @Sendable (String) -> [String] = DomainNotes.listMaps) {
         self.root = root
         self.lines = lines
+        self.maps = maps
+    }
+
+    public static let mapLimit = 20
+
+    public static func listMaps(_ folder: String) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [])
+            .filter { $0.hasSuffix(".md") && !$0.hasPrefix(".") }
+            .map { String($0.dropLast(3)) }
+            .sorted()
     }
 
     public static func == (a: DomainNotes, b: DomainNotes) -> Bool { a.root == b.root }
@@ -174,6 +186,7 @@ public struct DomainNotes: Equatable, Sendable {
 
     public func checklist(_ domain: String) -> String { root + "/" + domain + "/checklist.md" }
     public func notes(_ domain: String) -> String { root + "/" + domain + "/notes.md" }
+    public func mapsFolder(_ domain: String) -> String { root + "/" + domain + "/maps" }
 
     public func promptLines(domain: String, helper: String, source: String, canWrite: Bool = true) -> String {
         guard domain != DomainMap.defaultKey else {
@@ -184,6 +197,12 @@ public struct DomainNotes: Equatable, Sendable {
         var out = [
             "- 도메인 노트: 점검표 `\(checklist(domain))` (\(describe(checklist(domain)))), 노트 `\(notes(domain))` (\(describe(notes(domain)))). domain-review 스킬이 말하는 `~/.claude/references/notes/{도메인}/` 은 이 경로다. 노트는 이번 건 키워드로 Grep 한다.",
         ]
+        let topics = maps(mapsFolder(domain))
+        if !topics.isEmpty {
+            let shown = topics.prefix(Self.mapLimit).joined(separator: ", ")
+            let more = topics.count > Self.mapLimit ? " 외 \(topics.count - Self.mapLimit)개" : ""
+            out.append("- 지도: `\(mapsFolder(domain))/` 아래 \(shown)\(more). 이번 건 주제와 맞는 지도가 있으면 코드를 찾기 전에 먼저 읽는다.")
+        }
         guard canWrite else {
             out.append("- 노트·점검표는 읽기만 한다(쓰기는 PM·리뷰어가 한다).\(missing ? " 아직 없으면 점검표 없이 진행하고 지시서의 점검표 답을 따른다." : "")")
             return out.joined(separator: "\n")

@@ -378,7 +378,7 @@ public enum PipelineAccess {
         func bash(_ names: [String]) -> [String] { names.map { "Bash(\(helper) \($0):*)" } }
         return [
             .pm: ClaudeCommand.WriteAccess(tools: bash(["jira-get", "jira-search", "jira-comments", "jira-links", "jira-transition", "jira-comment",
-                                                        "write-note", "event", "jira-state", "git-read", "domain-note"]), dirs: [workDir, references]),
+                                                        "write-note", "event", "jira-state", "git-read", "domain-note", "domain-map"]), dirs: [workDir, references]),
             .dev: ClaudeCommand.WriteAccess(tools: bash(["run-tests", "git-read"]), dirs: [workDir, references]),
             .tester: ClaudeCommand.WriteAccess(tools: bash(["run-tests", "git-read"]), dirs: [workDir]),
             .reviewer: ClaudeCommand.WriteAccess(tools: bash(["git-read", "domain-note"]) + ["Skill(domain-review)", "Skill(code-review)"],

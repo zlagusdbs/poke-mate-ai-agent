@@ -1457,6 +1457,19 @@ do {
     check(DomainNotes.root(fromConnections: rows, home: "/u") == "/u/kb/notes" && DomainNotes.root(fromConnections: nil, home: "/u") == "/u/.claude/references/notes"
           && DomainNotes.root(fromConnections: Data(#"[{"kind":"settings","id":"automation","domainNotesDir":" "}]"#.utf8), home: "/u") == "/u/.claude/references/notes",
           "notes: 노트 폴더는 automation 설정 domainNotesDir, 없으면 ~/.claude/references/notes")
+    let mapped = DomainNotes(root: "/n", lines: { _ in 5 }, maps: { $0 == "/n/acme/maps" ? (1...22).map { "주제\($0)" } : [] })
+    let mapLine = mapped.promptLines(domain: "acme", helper: "H", source: "ACME-1")
+    check(mapLine.contains("- 지도: `/n/acme/maps/` 아래 주제1, ") && mapLine.contains(" 외 2개") && !mapLine.contains("주제22,")
+          && !DomainNotes(root: "/n", lines: { _ in 5 }, maps: { _ in [] }).promptLines(domain: "acme", helper: "H", source: "ACME-1").contains("지도"),
+          "notes: 지도가 있으면 주제 목록(최대 20개)을 안내, 없으면 줄 없음")
+    let mapBase = FileManager.default.temporaryDirectory.appendingPathComponent("pokemate-maps-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: mapBase, withIntermediateDirectories: true)
+    for name in ["b.md", "a.md", ".hidden.md", "x.txt"] { FileManager.default.createFile(atPath: mapBase.appendingPathComponent(name).path, contents: Data()) }
+    check(DomainNotes.listMaps(mapBase.path) == ["a", "b"] && DomainNotes.listMaps("/n/none").isEmpty, "notes: 지도 목록은 .md 만, 숨김 파일 제외")
+    try? FileManager.default.removeItem(at: mapBase)
+    let mapDefaults = PipelineAccess.defaults(helper: "h", workDir: "/ws", references: "/refs", pipelines: "/p")
+    check(mapDefaults[.pm]?.tools.contains("Bash(h domain-map:*)") == true && mapDefaults[.reviewer]?.tools.contains("Bash(h domain-map:*)") == false,
+          "notes: 지도는 PM 만 남긴다")
     let linkBase = FileManager.default.temporaryDirectory.appendingPathComponent("pokemate-notes-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: linkBase.appendingPathComponent("real"), withIntermediateDirectories: true)
     try? FileManager.default.createSymbolicLink(at: linkBase.appendingPathComponent("link"), withDestinationURL: linkBase.appendingPathComponent("real"))

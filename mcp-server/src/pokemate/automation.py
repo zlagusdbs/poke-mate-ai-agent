@@ -962,6 +962,29 @@ def cmd_domain_note(args):
     return 0
 
 
+def cmd_domain_map(args):
+    args.topic = "-".join(args.topic.split())
+    for value, label in ((args.domain, "domain"), (args.topic, "topic")):
+        if not DOMAIN_NAME.match(value):
+            raise SystemExit(f"bad {label} name")
+    if args.domain == "default":
+        raise SystemExit("도메인을 정하지 못한 건(default)은 지도를 남기지 않아요")
+    with open(os.path.expanduser(args.body_file), encoding="utf-8") as f:
+        body = f.read().strip()
+    if not body:
+        raise SystemExit("empty map")
+    folder = ensure_domain_notes(args.domain) / "maps"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{args.topic}.md"
+    existed = path.exists()
+    if not body.startswith("# "):
+        body = f"# {args.topic}\n\n{body}"
+    path.write_text(f"{body}\n\n갱신: {now().strftime('%Y-%m-%d')} · 출처: {args.source}\n", encoding="utf-8")
+    lines = path.read_text(encoding="utf-8").count("\n")
+    print(f"{'updated' if existed else 'created'} {path} ({lines}줄)")
+    return 0
+
+
 EVAL_READ_ONLY = {"gh-get", "gh-diff", "gh-file", "git-read", "jira-get", "jira-search", "jira-comments", "jira-links", "eval-score"}
 EVAL_SECTIONS = ("확인한 범위", "참고한 근거", "점검표", "결함", "미확인(질문)", "미확인", "버린 후보와 이유", "제안", "판정", "점검표 추가 제안")
 EVAL_BLOCK = re.compile(r"```pokemate-eval[ \t]*\n(.*?)```", re.S)
@@ -1487,6 +1510,13 @@ def main(argv=None):
     dn.add_argument("--text", help="코드·문서로 확인한 사실과 근거")
     dn.add_argument("--init", action="store_true", help="쓰지 않고 도메인 폴더 빈 틀만 준비")
     dn.set_defaults(func=cmd_domain_note)
+
+    dm = sub.add_parser("domain-map", help="도메인 지도(노트 폴더/{도메인}/maps/{주제}.md)를 본문 파일로 만들거나 갱신본으로 바꿈 (git 은 부르지 않음)", description="도메인 지도(노트 폴더/{도메인}/maps/{주제}.md)를 본문 파일로 만들거나 갱신본으로 바꾼다. 같은 주제가 있으면 통째로 바꾸고 이전 것은 노트 저장소의 Git 이 보관한다. git 은 부르지 않는다")
+    dm.add_argument("--domain", required=True, help="도메인 이름")
+    dm.add_argument("--topic", required=True, help="주제 (파일 이름, 슬래시·점으로 시작 금지)")
+    dm.add_argument("--body-file", required=True, help="지도 본문 파일 (write-note 로 쓴 경로)")
+    dm.add_argument("--source", required=True, help="출처 (예: ACME-1)")
+    dm.set_defaults(func=cmd_domain_map)
 
     gr = sub.add_parser("gh-review", help="리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절)", description="리뷰 등록 (APPROVE·COMMENT 만, 내 PR·draft·지정 안 된 PR 거절)")
     gr.add_argument("--repo", required=True, help="owner/repo")
