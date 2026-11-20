@@ -567,7 +567,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
                 switch (response)
                 {
                     case ClaudeResponse.Success success: notify($"Jira 역할 처리 이어서 끝남 · {state.Key}", success.Text, false); break;
-                    case ClaudeResponse.Failure failure: notify($"Jira 역할 처리 멈춤 · {state.Key}", failure.Reason.Message, true); break;
+                    case ClaudeResponse.Failure failure: notify($"Jira 역할 처리 멈춤 · {state.Key}", failure.Reason.BackgroundMessage, true); break;
                 }
             });
         }
@@ -669,7 +669,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         return response switch
         {
             ClaudeResponse.Success success => new PipelineRoleResult(Text: success.Text, SessionId: success.SessionId.Length == 0 ? null : success.SessionId, Usage: usage),
-            ClaudeResponse.Failure failure => new PipelineRoleResult(SessionId: null, Usage: usage, Failure: failure.Reason.Message),
+            ClaudeResponse.Failure failure => new PipelineRoleResult(SessionId: null, Usage: usage, Failure: failure.Reason.BackgroundMessage),
             _ => new PipelineRoleResult(Usage: usage, Failure: "알 수 없는 응답"),
         };
     }

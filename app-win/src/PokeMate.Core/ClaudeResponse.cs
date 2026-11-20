@@ -23,6 +23,14 @@ public abstract record ClaudeFailure
         Other o => $"오류가 났어요: {SwiftText.Prefix(o.Text, 200)}",
         _ => "",
     };
+
+    /// 사용자가 시키지 않은 실행(알림·자동화·파이프라인)에서 쓰는 문구. 이 실행들은 로그인을 시작하지 않는다.
+    public const string BackgroundLoginMessage = "로그인이 필요해요. 채팅에서 다시 물어보거나 ⚙️ 설정의 「메이트 Claude 계정」에서 로그인해 주세요.";
+
+    public string BackgroundMessage => this is NotLoggedIn ? BackgroundLoginMessage : Message;
+
+    /// 로그인 필요로 실패했을 때 `claude auth login` 을 시작해도 되는지: 사용자가 보낸 채팅·작업 세션 질문만.
+    public static bool StartsLogin(ClaudeFailure reason, bool interactive) => interactive && reason is NotLoggedIn;
 }
 
 public abstract record ClaudeResponse

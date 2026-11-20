@@ -119,7 +119,7 @@ final class ChatSession: ObservableObject {
                 case .success(let text, _):
                     append(ChatMessage(role: .assistant, text: text))
                 case .failure(let failure):
-                    append(ChatMessage(role: .error, text: failure.message))
+                    append(ChatMessage(role: .error, text: failure.backgroundMessage))
                 }
             }
             automationRunners[id] = nil
@@ -228,7 +228,7 @@ final class ChatSession: ObservableObject {
             case .report(let title, let prompt, let completion):
                 append(ChatMessage(role: .user, text: "🔔 \(title)"))
                 let response = await runner.run(prompt: prompt, sessionId: nil, settings: settings())
-                handle(response, prompt: nil, images: [])
+                handle(response, prompt: nil, images: [], interactive: false)
                 completion(response, runner.lastUsage)
             }
             isBusy = false
@@ -256,7 +256,8 @@ final class ChatSession: ObservableObject {
         }
     }
 
-    private func handle(_ response: ClaudeResponse, prompt: String?, images: [ImageAttachment], repo: String? = nil) {
+    /// `interactive` 는 사용자가 보낸 채팅·작업 세션 질문일 때만 true. 알림 실행은 로그인을 시작하지 않고 로그인이 필요하다고만 남긴다.
+    private func handle(_ response: ClaudeResponse, prompt: String?, images: [ImageAttachment], repo: String? = nil, interactive: Bool = true) {
         lastFailedRepo = repo
         switch response {
         case .success(let text, let newSession):
@@ -275,12 +276,14 @@ final class ChatSession: ObservableObject {
             message.routeSuggest = suggested
             append(message)
         case .failure(let failure):
-            var message = ChatMessage(role: .error, text: failure.message)
+            var message = ChatMessage(role: .error, text: interactive ? failure.message : failure.backgroundMessage)
             message.session = repo
             append(message)
             lastFailedImages = images
-            if failure == .notLoggedIn {
+            if ClaudeFailure.startsLogin(failure, interactive: interactive) {
                 startLogin(retry: prompt)
+            } else if failure == .notLoggedIn {
+                // 알림 실행: 로그인은 사용자가 채팅이나 설정에서 시작한다
             } else if failure != .cancelled && failure != .usageLimit {   // 한도는 다시 시도해도 같아서 버튼을 숨긴다
                 lastFailedPrompt = prompt
             }

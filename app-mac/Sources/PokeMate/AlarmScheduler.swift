@@ -86,9 +86,9 @@ final class AlarmScheduler {
                 if alarm.toPanel { reminders.add(title: alarm.title, text: text, failed: false) }
                 model.markDone(alarm.id, "끝났어요. 결과는 알림 창과 채팅에 있어요", usage: usage)
             case .failure(let failure):
-                if alarm.toMac { notifier.send(title: "🔔 \(alarm.title) 실패", body: failure.message) }
-                if alarm.toPanel { reminders.add(title: alarm.title, text: failure.message, failed: true) }
-                model.markDone(alarm.id, failure.message, failed: true, usage: usage)
+                if alarm.toMac { notifier.send(title: "🔔 \(alarm.title) 실패", body: failure.backgroundMessage) }
+                if alarm.toPanel { reminders.add(title: alarm.title, text: failure.backgroundMessage, failed: true) }
+                model.markDone(alarm.id, failure.backgroundMessage, failed: true, usage: usage)
             }
         }
     }

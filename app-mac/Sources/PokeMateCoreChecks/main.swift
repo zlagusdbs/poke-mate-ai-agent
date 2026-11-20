@@ -631,6 +631,12 @@ do {
     let auth = #"{"is_error":true,"result":"Failed to authenticate: OAuth session expired","session_id":"x"}"#
     check(ClaudeResponse.parse(stdout: Data(auth.utf8), exitCode: 1) == .failure(.notLoggedIn), "parse: 로그인 만료 JSON")
     check(ClaudeResponse.parse(stdout: Data("Please run /login".utf8), exitCode: 1) == .failure(.notLoggedIn), "parse: JSON 아닌 로그인 안내")
+    check(ClaudeFailure.startsLogin(.notLoggedIn, interactive: true) && !ClaudeFailure.startsLogin(.notLoggedIn, interactive: false)
+          && !ClaudeFailure.startsLogin(.timeout, interactive: true),
+          "login: 로그인은 사용자가 보낸 채팅·작업 질문에서만 시작 (알림·자동화 실행은 시작 안 함)")
+    check(ClaudeFailure.notLoggedIn.backgroundMessage == ClaudeFailure.backgroundLoginMessage && !ClaudeFailure.backgroundLoginMessage.contains("브라우저")
+          && ClaudeFailure.timeout.backgroundMessage == ClaudeFailure.timeout.message,
+          "login: 알림 실행의 로그인 필요 문구는 브라우저를 띄운다고 하지 않음")
     if case .failure(.malformed) = ClaudeResponse.parse(stdout: Data("segfault".utf8), exitCode: 139) { check(true, "") }
     else { check(false, "parse: 알 수 없는 출력은 malformed") }
 }
