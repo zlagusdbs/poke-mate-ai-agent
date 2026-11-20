@@ -378,9 +378,14 @@ public sealed class ClaudeUsageReader
         return s;
     }
 
-    void Save()
+    /// 마지막 저장이 성공했는지 (실패하면 다음 새로 고침에서 다시 시도한다)
+    public bool LastSaveOk { get; private set; } = true;
+
+    bool Save()
     {
-        try { AppPaths.WriteAtomic(cacheFile, Json.Serialize(cache, indented: false)); } catch { }
+        try { AppPaths.WriteAtomic(cacheFile, Json.Serialize(cache, indented: false)); LastSaveOk = true; }
+        catch { LastSaveOk = false; }
+        return LastSaveOk;
     }
 }
 

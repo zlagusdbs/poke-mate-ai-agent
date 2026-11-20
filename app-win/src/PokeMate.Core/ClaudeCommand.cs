@@ -55,6 +55,8 @@ public static class ClaudeCommand
     }
 
     /// claudeMdExcludes 패턴. Windows 홈은 `/` 로 적는다 (`C:/Users/u/.claude/**`).
+    // claudeMdExcludes 는 `C:/Users/u/...` 형식이어야 먹는다 (Claude Code 2.1.328 에서 확인: `//c/Users/u/...` 는 제외되지 않음).
+    // 권한 규칙(`Edit(//c/...)`)과 형식이 다르다.
     public static List<string> HomeExcludes(AppSettings settings, bool automation, string? home = null, IReadOnlyList<string>? rules = null)
     {
         var h = Paths.ForwardSlashes(home ?? Paths.Home);

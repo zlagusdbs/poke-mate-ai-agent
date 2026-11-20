@@ -43,6 +43,12 @@ public static class AppSettingsChecks
         Check.That(fromMac?.Hotkey == Hotkey.Default, "settings: 맥 단축키 값(Carbon)은 Windows 기본 단축키로");
         var tilde = Json.TryDeserialize<AppSettings>("""{"repoDir":"~/Workspace/x"}""");
         Check.That(tilde?.RepoDir == Path.Combine(home, "Workspace", "x"), "settings: ~/ 경로는 홈 폴더로");
+        // 사용자가 직접 정한 값은 지키고, 맥 경로만 고친다
+        var custom = Json.TryDeserialize<AppSettings>("""{"uvPath":"uv","claudePath":"claude","repoDir":"work/repo"}""");
+        Check.That(custom?.UvPath == "uv" && custom.ClaudePath == "claude" && custom.RepoDir == "work/repo", "settings: PATH 이름·상대 경로는 그대로 둠");
+        var macOnly = Json.TryDeserialize<AppSettings>("""{"uvPath":"/opt/homebrew/bin/uv","claudePath":"~/Library/x/claude","repoDir":"/Users/kim/r"}""");
+        Check.That(macOnly?.UvPath == d.UvPath && macOnly.ClaudePath == d.ClaudePath && macOnly.RepoDir == d.RepoDir, "settings: /opt/homebrew, ~/Library, /Users 는 기본 경로로");
+        Check.That(Json.TryDeserialize<AppSettings>("""{"uvPath":"~/x/uv.exe"}""")?.UvPath == Path.Combine(home, "x", "uv.exe"), "settings: ~/x 는 홈 폴더로");
         Check.That(Json.TryDeserialize<AppSettings>("""{"pokedexRange":"gen9"}""")?.PokedexRange == PokedexRange.Gen1, "settings: 모르는 도감 범위는 1세대");
         Check.That(Json.TryDeserialize<AppSettings>("""{"reportHour":"ten"}""") == null, "settings: 형식이 틀린 값은 읽지 않음 (기본 설정으로)");
 
@@ -60,6 +66,22 @@ public static class AppSettingsChecks
                    "settings: 저장하고 다시 읽음 (키 정렬, rawValue 그대로)");
         File.WriteAllText(AppPaths.SettingsFile, "{ 깨진");
         Check.That(AppPaths.LoadSettings() == AppSettings.Default, "settings: 깨진 파일이면 기본 설정");
+        File.Delete(AppPaths.SettingsFile);
+
+        // 다른 프로세스(파이썬 서버)가 파일을 열어 둔 동안의 저장: 풀리면 저장됨, 안 풀리면 실패를 알리고 임시 파일을 남기지 않음
+        var lockRound = AppSettings.Default;
+        lockRound.OwnerName = "잠금 시험";
+        File.WriteAllText(AppPaths.SettingsFile, "{}");
+        var held = new FileStream(AppPaths.SettingsFile, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var releaser = Task.Run(async () => { await Task.Delay(120); held.Dispose(); });
+        var okAfterRelease = AppPaths.SaveSettings(lockRound);
+        releaser.Wait();
+        Check.That(okAfterRelease && AppPaths.LoadSettings().OwnerName == "잠금 시험", "settings: 파일이 잠깐 열려 있어도 다시 시도해 저장함");
+        held = new FileStream(AppPaths.SettingsFile, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var failed = AppPaths.SaveSettings(AppSettings.Default);
+        held.Dispose();
+        Check.That(!failed && AppPaths.LoadSettings().OwnerName == "잠금 시험", "settings: 끝내 못 바꾸면 실패를 알리고 이전 내용 유지");
+        Check.That(!Directory.GetFiles(AppPaths.DataDir, "*.tmp-*").Any(), "settings: 실패해도 .tmp- 파일이 남지 않음");
         File.Delete(AppPaths.SettingsFile);
 
         // 하위 프로세스 환경

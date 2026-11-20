@@ -76,12 +76,16 @@ public sealed record AppSettings
 
     public override int GetHashCode() => HashCode.Combine(AssistantName, RepoDir, ClaudePath, UvPath, OwnerName, Model);
 
-    /// 맥에서 복사해 온 경로(`/opt/homebrew/bin/uv`, `/Users/…`)는 Windows 기본값으로, `~/` 는 홈 폴더로.
+    /// 맥에서 복사해 온 경로(`/opt/homebrew/bin/uv`, `/Users/…`, `~/Library/…`)만 Windows 기본값으로 바꾼다.
+    /// `uv` 같은 PATH 이름과 상대 경로는 그대로 두고, `~/` 는 홈 폴더로 푼다.
     internal static string WindowsPath(string value, string fallback)
     {
         var v = value.Trim();
+        if (v.Length == 0) return fallback;
+        if (v.StartsWith("/", StringComparison.Ordinal)) return fallback;
+        if (v.StartsWith("~/Library", StringComparison.Ordinal) || v.StartsWith(@"~\Library", StringComparison.Ordinal)) return fallback;
         if (v.StartsWith("~", StringComparison.Ordinal)) v = Paths.ExpandTilde(v);
-        return Paths.IsWindowsAbsolute(v) ? v : fallback;
+        return v;
     }
 }
 
@@ -245,24 +249,40 @@ public static class AppPaths
         catch { return AppSettings.Default; }
     }
 
-    public static void SaveSettings(AppSettings settings)
+    /// 설정을 저장한다. 실패하면 false (다른 프로세스가 파일을 붙잡고 있는 경우 등). 임시 파일은 남기지 않는다.
+    public static bool SaveSettings(AppSettings settings)
     {
         try
         {
             Directory.CreateDirectory(DataDir);
             WriteAtomic(SettingsFile, Json.SortedPretty(settings));
+            return true;
         }
-        catch { }
+        catch { return false; }
     }
 
     /// 임시 파일에 쓰고 바꿔 넣는다 (Swift `.atomic`). 한글은 UTF-8, BOM 없음.
-    public static void WriteAtomic(string path, string text)
+    /// Windows 는 다른 프로세스(파이썬 서버)가 대상 파일을 열어 둔 동안 바꿔 넣기가 실패하므로 잠깐씩 쉬며 다시 시도한다.
+    /// 끝내 실패하면 임시 파일을 지우고 예외를 던진다.
+    public static void WriteAtomic(string path, string text, int attempts = 5, int delayMs = 50)
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
-        File.WriteAllText(temp, text, new System.Text.UTF8Encoding(false));
-        File.Move(temp, path, overwrite: true);
+        try
+        {
+            File.WriteAllText(temp, text, new System.Text.UTF8Encoding(false));
+            for (var i = 1; ; i++)
+            {
+                try { File.Move(temp, path, overwrite: true); return; }
+                catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && i < attempts) { Thread.Sleep(delayMs); }
+            }
+        }
+        catch
+        {
+            try { File.Delete(temp); } catch { }
+            throw;
+        }
     }
 
     /// 하위 프로세스 환경. PATH 는 `;` 로 잇고 uv·claude 폴더, Git 의 cmd·bin 폴더를 앞에 더한다. 메이트 전용 로그인 폴더를 쓴다.
