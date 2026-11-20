@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -121,7 +122,7 @@ def test_settings_come_from_connections_file(env):
 
 def test_cli_dispatches_auto(env, capsys):
     assert cli.main(["auto", "write-note", "--name", "a.md", "--text", "hi"]) == 0
-    assert capsys.readouterr().out.strip().endswith("automation/notes/a.md")
+    assert capsys.readouterr().out.strip().replace(os.sep, "/").endswith("automation/notes/a.md")
 
 
 def test_event_logs_and_dry_run_card(env, capsys):
@@ -755,3 +756,22 @@ def test_eval_score_limits_find_to_named_sections():
     as_defect = "확인한 범위: 깊게\n결함: coupon.py:2 — 주문 금액이 최소 주문 금액과 같으면 할인 0 → >= 로\n미확인(질문): 없음\n판정: 댓글\n"
     assert automation.eval_score_case(case, as_question)["missed"] == ["최소 주문 경계"]
     assert automation.eval_score_case(case, as_defect)["pass"]
+
+
+def test_shell_command_macos(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert automation._shell_command("echo hi") == ["/bin/zsh", "-lc", "echo hi"]
+
+
+def test_shell_command_windows_git_bash(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(automation.shutil, "which", lambda name: r"C:\Program Files\Git\bin\bash.exe")
+    assert automation._shell_command("echo hi") == [r"C:\Program Files\Git\bin\bash.exe", "-lc", "echo hi"]
+
+
+def test_shell_command_windows_falls_back_to_cmd(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(automation.shutil, "which", lambda name: r"C:\Windows\System32\bash.exe")
+    assert automation._shell_command("echo hi") == ["cmd", "/c", "echo hi"]
+    monkeypatch.setattr(automation.shutil, "which", lambda name: None)
+    assert automation._shell_command("echo hi") == ["cmd", "/c", "echo hi"]

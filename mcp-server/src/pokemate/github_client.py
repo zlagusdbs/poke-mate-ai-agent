@@ -2,7 +2,9 @@
 
 import json
 import shutil
+import os
 import subprocess
+import sys
 from urllib.parse import urlparse
 
 from .errors import AuthExpired, PokeMateError, NetworkUnreachable
@@ -16,7 +18,11 @@ def host_of(base_url: str) -> str:
 
 
 def gh_path() -> str:
-    path = shutil.which("gh") or "/opt/homebrew/bin/gh"
+    if sys.platform == "win32":
+        fallback = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "GitHub CLI", "gh.exe")
+    else:
+        fallback = "/opt/homebrew/bin/gh"
+    path = shutil.which("gh") or fallback
     if not shutil.which(path):
         raise PokeMateError(SYSTEM, "GitHub CLI(gh)가 설치돼 있지 않아요")
     return path
