@@ -37,7 +37,13 @@ final class Book: @unchecked Sendable {
     var book: WorkSessionBook
     let file: URL
     init(file: URL) { self.file = file; book = WorkSessionBook.load(from: file) }
-    func id(_ k: String) -> String? { lock.withLock { book.resumeId(k) } }
+    /// 앱과 같은 방식: 새로 시작하면 앞 세션을 보관하고 이유(새 티켓 등)를 남긴다
+    func chose(_ k: String, _ ticket: String, _ resumeId: String?, _ reason: String?) {
+        guard resumeId == nil else { return }
+        lock.withLock {
+            if book.startFresh(repo: k, ticket: ticket, reason: reason, now: Date()) { book.save(to: file) }
+        }
+    }
     func record(_ k: String, _ id: String, _ ticket: String, _ usage: RunUsage?) {
         lock.withLock {
             book.record(repo: k, sessionId: id, key: ticket, usage: usage, now: Date())
@@ -78,14 +84,14 @@ let io = PipelineIO(
               let diff = try? await runner.run(executable: "/usr/bin/git", arguments: ["-C", worktree, "diff", "HEAD"], timeout: 120), diff.exitCode == 0 else { return nil }
         return String(decoding: diff.stdout, as: UTF8.self)
     },
-    sessionId: { k in book.id(k) },
     recordSession: { k, id, ticket, usage in book.record(k, id, ticket, usage) },
     save: { state in
         state.save(in: pipelinesDir)
         let last = state.history.last.map { "\($0.role)→\($0.next)" } ?? "-"
         Trial.line("단계 \(state.statusText) · 마지막 \(last) · 비용 \(TokenFormat.usd(state.totalCost))\(state.inflight.map { " · 실행 중 \($0.role) \($0.sessionId)" } ?? "")")
     },
-    notice: { title, body in Trial.line("알림 \(title): \(body)") })
+    notice: { title, body in Trial.line("알림 \(title): \(body)") },
+    sessionChosen: { k, ticket, resumeId, reason in book.chose(k, ticket, resumeId, reason) })
 
 let start: PipelineState
 if var saved = PipelineState.load(key: key, in: pipelinesDir) {

@@ -214,6 +214,9 @@ public static class PipelineNextExtensions
     };
 }
 
+/// 한 티켓의 한 역할 세션 (`sessions` 의 값). 같은 티켓 안에서만 이어 쓴다.
+public sealed record PipelineSession(string Id, DateTimeOffset LastUsed, long ContextTokens);
+
 /// 티켓 하나의 진행 상태. `automation\pipelines\{KEY}.json` (맥과 같은 키·ISO 8601 날짜·키 정렬).
 /// 값이 클래스라서 맥의 값 복사가 필요한 곳(여러 번 시작하는 상태 등)은 `Copy()` 를 쓴다.
 public sealed record PipelineState
@@ -264,6 +267,8 @@ public sealed record PipelineState
     public string? Reason { get; set; }
     public InflightRun? Inflight { get; set; }
     public Dictionary<string, double> Costs { get; set; } = new();
+    /// 역할(pm·dev·tester·reviewer) → 이 티켓의 그 역할 세션. 없으면(옛 파일·아직 안 돎) null 이고 파일에도 안 적는다.
+    public Dictionary<string, PipelineSession>? Sessions { get; set; }
     public List<Step> History { get; set; } = new();
     public int TimeoutMinutes { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -284,7 +289,7 @@ public sealed record PipelineState
     }
 
     /// 맥의 값 복사 (목록·표는 따로)
-    public PipelineState Copy() => this with { Create = Create.ToList(), Costs = new Dictionary<string, double>(Costs), History = History.ToList() };
+    public PipelineState Copy() => this with { Create = Create.ToList(), Costs = new Dictionary<string, double>(Costs), Sessions = Sessions == null ? null : new Dictionary<string, PipelineSession>(Sessions), History = History.ToList() };
 
     [JsonIgnore]
     public bool IsActive => Stage is StageKind.Pm or StageKind.Dev or StageKind.Tester or StageKind.Reviewer or StageKind.Branch or StageKind.Push;
@@ -308,6 +313,21 @@ public sealed record PipelineState
         StageKind.Reviewer => PipelineRole.Reviewer,
         _ => null,
     };
+
+    /// 이 티켓의 그 역할 세션을 이어 쓸지: (id, 새로 시작하는 이유). 이 티켓 세션이 없으면 (null, null), 기준(분·토큰·리뷰어)에 걸리면 (null, 이유).
+    public (string? Id, string? Reason) ReuseSession(PipelineRole role, SessionReuse policy, DateTimeOffset now)
+    {
+        if (Sessions == null || !Sessions.TryGetValue(role.Raw(), out var s) || string.IsNullOrEmpty(s.Id)) return (null, null);
+        return policy.FreshReason(s, role, now) is string reason ? (null, reason) : (s.Id, null);
+    }
+
+    /// 역할 실행이 끝난 뒤 이 티켓의 그 역할 세션을 기록한다. 같은 세션이면 사용량을 못 받았을 때 문맥 토큰을 그대로 둔다.
+    public void RecordSession(PipelineRole role, string id, RunUsage? usage, DateTimeOffset now)
+    {
+        Sessions ??= new();
+        var before = Sessions.TryGetValue(role.Raw(), out var old) && old.Id == id ? old.ContextTokens : 0;
+        Sessions[role.Raw()] = new PipelineSession(id, now, usage?.Context ?? before);
+    }
 
     [JsonIgnore] public double TotalCost => Costs.Values.Sum();
 
@@ -599,29 +619,33 @@ public sealed class PipelineIO
     public Func<IReadOnlyList<string>, Task<(bool Ok, string Output)>> Helper { get; set; }
     /// 작업 폴더의 변경(diff). 만들지 못하면 null
     public Func<string, Task<string?>> Diff { get; set; }
-    /// 역할 세션 키(`{도메인}:{역할}`)로 이어 쓸 세션 id
-    public Func<string, Task<string?>> SessionId { get; set; }
     /// (세션 키, 세션 id, 티켓 키, 사용량)
     public Func<string, string, string, RunUsage?, Task> RecordSession { get; set; }
     public Func<PipelineState, Task> Save { get; set; }
     /// (제목, 내용): 앱 안 알림
     public Func<string, string, Task> Notice { get; set; }
+    /// 세션 이어 쓰기 기준 (설정). 기본값은 55분·12만 토큰·리뷰어 늘 새로
+    public Func<SessionReuse> Policy { get; set; }
+    /// (세션 키, 티켓 키, 이어 쓸 세션 id 또는 null, 새로 시작하는 이유 또는 null): 역할을 실행하기 전에 고른 결과를 알린다 (작업 탭 기록용)
+    public Func<string, string, string?, string?, Task> SessionChosen { get; set; }
 
     public PipelineIO(Func<PipelineRole, string, string?, string?, ClaudeCommand.WriteAccess, Task<PipelineRoleResult>> runRole,
                       Func<IReadOnlyList<string>, Task<(bool Ok, string Output)>> helper,
                       Func<string, Task<string?>> diff,
-                      Func<string, Task<string?>> sessionId,
                       Func<string, string, string, RunUsage?, Task> recordSession,
                       Func<PipelineState, Task> save,
-                      Func<string, string, Task>? notice = null)
+                      Func<string, string, Task>? notice = null,
+                      Func<SessionReuse>? policy = null,
+                      Func<string, string, string?, string?, Task>? sessionChosen = null)
     {
         RunRole = runRole;
         Helper = helper;
         Diff = diff;
-        SessionId = sessionId;
         RecordSession = recordSession;
         Save = save;
         Notice = notice ?? ((_, _) => Task.CompletedTask);
+        Policy = policy ?? (() => new SessionReuse());
+        SessionChosen = sessionChosen ?? ((_, _, _, _) => Task.CompletedTask);
     }
 }
 
@@ -833,7 +857,6 @@ public static class JiraPipeline
             catch { }
         }
         var sessionKey = PipelineRoleExtensions.SessionKey(s.Domain, role);
-        var known = await io.SessionId(sessionKey);
         var access = PipelineAccess.Access(role, s.Worktree, config.Access);
         var dirs = access.Dirs.ToList();
         dirs.AddRange(config.Domains.KnowledgePaths(s.Domain, config.Home).Append(config.Notes.Root)
@@ -861,6 +884,8 @@ public static class JiraPipeline
         }
         else
         {
+            var (known, freshReason) = s.ReuseSession(role, io.Policy(), now());
+            await io.SessionChosen(sessionKey, s.Key, known, freshReason);
             var fresh = known == null ? Guid.NewGuid().ToString().ToLowerInvariant() : null;
             usedId = known ?? fresh ?? "";
             s.Inflight = new PipelineState.InflightRun(role.Raw(), usedId, now());
@@ -871,7 +896,11 @@ public static class JiraPipeline
         if (result.Interrupted) return false;
         s.Inflight = null;
         var id = result.SessionId ?? (usedId.Length == 0 ? null : usedId);
-        if (!string.IsNullOrEmpty(id)) await io.RecordSession(sessionKey, id, s.Key, result.Usage);
+        if (!string.IsNullOrEmpty(id))
+        {
+            s.RecordSession(role, id, result.Usage, now());
+            await io.RecordSession(sessionKey, id, s.Key, result.Usage);
+        }
         s.Costs[role.Raw()] = s.Costs.GetValueOrDefault(role.Raw()) + (result.Usage?.CostUSD ?? 0);
         if (result.Failure != null || result.Text is not string answer)
         {

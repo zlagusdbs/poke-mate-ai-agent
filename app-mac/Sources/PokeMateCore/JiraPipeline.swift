@@ -150,6 +150,19 @@ public struct PipelineNext: Equatable, Sendable {
     }
 }
 
+/// 한 티켓의 한 역할 세션 (`sessions` 의 값). 같은 티켓 안에서만 이어 쓴다.
+public struct PipelineSession: Codable, Equatable, Sendable {
+    public var id: String
+    public var lastUsed: Date
+    public var contextTokens: Int
+
+    public init(id: String, lastUsed: Date, contextTokens: Int) {
+        self.id = id
+        self.lastUsed = lastUsed
+        self.contextTokens = contextTokens
+    }
+}
+
 public struct PipelineState: Codable, Equatable, Sendable {
     public enum Stage: String, Codable, Sendable { case pm, dev, tester, reviewer, branch, push, waiting, done, stopped }
 
@@ -169,7 +182,8 @@ public struct PipelineState: Codable, Equatable, Sendable {
 
         public init(role: String, sessionId: String, startedAt: Date) {
             self.role = role
-            self.sessionId = sessionId
+            self.policy = policy
+        self.sessionChosen = sessionChosen
             self.startedAt = startedAt
         }
     }
@@ -198,6 +212,8 @@ public struct PipelineState: Codable, Equatable, Sendable {
     public var reason: String?
     public var inflight: Inflight?
     public var costs: [String: Double] = [:]
+    /// 역할(pm·dev·tester·reviewer) → 이 티켓의 그 역할 세션. 없으면(옛 파일·아직 안 돎) nil 이고 파일에도 안 적는다.
+    public var sessions: [String: PipelineSession]?
     public var history: [Step] = []
     public var timeoutMinutes: Int
     public var createdAt: Date
@@ -228,6 +244,21 @@ public struct PipelineState: Codable, Equatable, Sendable {
     public var role: PipelineRole? { PipelineRole(rawValue: stage.rawValue) }
 
     public var totalCost: Double { costs.values.reduce(0, +) }
+
+    /// 이 티켓의 그 역할 세션을 이어 쓸지: (id, 새로 시작하는 이유). 이 티켓 세션이 없으면 (nil, nil), 기준(분·토큰·리뷰어)에 걸리면 (nil, 이유).
+    public func reuseSession(for role: PipelineRole, policy: SessionReuse, now: Date) -> (id: String?, reason: String?) {
+        guard let s = sessions?[role.rawValue], !s.id.isEmpty else { return (nil, nil) }
+        if let reason = policy.freshReason(for: s, role: role, now: now) { return (nil, reason) }
+        return (s.id, nil)
+    }
+
+    /// 역할 실행이 끝난 뒤 이 티켓의 그 역할 세션을 기록한다. 같은 세션이면 사용량을 못 받았을 때 문맥 토큰을 그대로 둔다.
+    public mutating func recordSession(role: PipelineRole, id: String, usage: RunUsage?, now: Date) {
+        var all = sessions ?? [:]
+        let before = all[role.rawValue].flatMap { $0.id == id ? $0.contextTokens : nil } ?? 0
+        all[role.rawValue] = PipelineSession(id: id, lastUsed: now, contextTokens: usage?.context ?? before)
+        sessions = all
+    }
 
     public var statusText: String {
         switch stage {
@@ -441,18 +472,22 @@ public struct PipelineIO: Sendable {
     public var runRole: @Sendable (PipelineRole, String, String?, String?, ClaudeCommand.WriteAccess) async -> PipelineRoleResult
     public var helper: @Sendable ([String]) async -> (ok: Bool, output: String)
     public var diff: @Sendable (String) async -> String?
-    public var sessionId: @Sendable (String) async -> String?
     public var recordSession: @Sendable (String, String, String, RunUsage?) async -> Void
     public var save: @Sendable (PipelineState) async -> Void
     public var notice: @Sendable (String, String) async -> Void
+    /// 세션 이어 쓰기 기준 (설정). 기본값은 55분·12만 토큰·리뷰어 늘 새로
+    public var policy: @Sendable () -> SessionReuse
+    /// (세션 키, 티켓 키, 이어 쓸 세션 id 또는 nil, 새로 시작하는 이유 또는 nil): 역할을 실행하기 전에 고른 결과를 알린다 (작업 탭 기록용)
+    public var sessionChosen: @Sendable (String, String, String?, String?) async -> Void
 
     public init(runRole: @escaping @Sendable (PipelineRole, String, String?, String?, ClaudeCommand.WriteAccess) async -> PipelineRoleResult,
                 helper: @escaping @Sendable ([String]) async -> (ok: Bool, output: String),
                 diff: @escaping @Sendable (String) async -> String?,
-                sessionId: @escaping @Sendable (String) async -> String?,
                 recordSession: @escaping @Sendable (String, String, String, RunUsage?) async -> Void,
                 save: @escaping @Sendable (PipelineState) async -> Void,
-                notice: @escaping @Sendable (String, String) async -> Void = { _, _ in }) {
+                notice: @escaping @Sendable (String, String) async -> Void = { _, _ in },
+                policy: @escaping @Sendable () -> SessionReuse = { SessionReuse() },
+                sessionChosen: @escaping @Sendable (String, String, String?, String?) async -> Void = { _, _, _, _ in }) {
         self.runRole = runRole
         self.notice = notice
         self.helper = helper
@@ -629,7 +664,6 @@ public enum JiraPipeline {
             diffFile = file.path
         }
         let sessionKey = PipelineRole.sessionKey(domain: s.domain, role: role)
-        let known = await io.sessionId(sessionKey)
         var access = PipelineAccess.access(for: role, worktree: s.worktree, table: config.access)
         access.dirs += (config.domains.knowledgePaths(for: s.domain, home: config.home) + [config.notes.root]).filter { !access.dirs.contains($0) }
         let interrupted = s.inflight?.role == role.rawValue ? s.inflight : nil
@@ -650,6 +684,9 @@ public enum JiraPipeline {
                 usedId = fresh
             }
         } else {
+            let choice = s.reuseSession(for: role, policy: io.policy(), now: now())
+            let known = choice.id
+            await io.sessionChosen(sessionKey, s.key, known, choice.reason)
             let fresh = known == nil ? UUID().uuidString.lowercased() : nil
             usedId = known ?? fresh ?? ""
             s.inflight = PipelineState.Inflight(role: role.rawValue, sessionId: usedId, startedAt: now())
@@ -659,7 +696,10 @@ public enum JiraPipeline {
         }
         if result.interrupted { return false }
         s.inflight = nil
-        if let id = result.sessionId ?? (usedId.isEmpty ? nil : usedId), !id.isEmpty { await io.recordSession(sessionKey, id, s.key, result.usage) }
+        if let id = result.sessionId ?? (usedId.isEmpty ? nil : usedId), !id.isEmpty {
+            s.recordSession(role: role, id: id, usage: result.usage, now: now())
+            await io.recordSession(sessionKey, id, s.key, result.usage)
+        }
         s.costs[role.rawValue, default: 0] += result.usage?.costUSD ?? 0
         guard result.failure == nil, let answer = result.text else {
             _ = s.stop("\(role.label) 실행 실패: \(result.failure ?? "답 없음")", now: now())

@@ -84,14 +84,24 @@ public sealed record SessionReuse
     public static SessionReuse Always => new(0, 0, false);
 
     /// 이 세션을 새로 시작해야 하면 그 이유 (이어 써도 되면 null). 0 이면 그 기준은 끈다.
-    public string? FreshReason(WorkSession session, DateTimeOffset now)
+    public string? FreshReason(WorkSession session, DateTimeOffset now) =>
+        FreshReason(PipelineRoleExtensions.Split(session.Repo) is { Role: PipelineRole.Reviewer }, session.LastUsed, session.ContextTokens, now);
+
+    /// 티켓 하나의 역할 세션(`pipelines\{KEY}.json` 의 sessions)에 같은 기준을 쓴다.
+    public string? FreshReason(PipelineSession session, PipelineRole role, DateTimeOffset now) =>
+        FreshReason(role == PipelineRole.Reviewer, session.LastUsed, session.ContextTokens, now);
+
+    string? FreshReason(bool reviewer, DateTimeOffset lastUsed, long contextTokens, DateTimeOffset now)
     {
-        if (FreshReviewer && PipelineRoleExtensions.Split(session.Repo) is { Role: PipelineRole.Reviewer }) return ReviewerReason;
-        var idle = (int)((now - session.LastUsed).TotalSeconds / 60);
+        if (FreshReviewer && reviewer) return ReviewerReason;
+        var idle = (int)((now - lastUsed).TotalSeconds / 60);
         if (IdleMinutes > 0 && idle >= IdleMinutes) return $"식음 {idle}분 (기준 {IdleMinutes}분)";
-        if (MaxTokens > 0 && session.ContextTokens >= MaxTokens) return $"문맥 {TokenFormat.Compact(session.ContextTokens)} (기준 {TokenFormat.Compact(MaxTokens)})";
+        if (MaxTokens > 0 && contextTokens >= MaxTokens) return $"문맥 {TokenFormat.Compact(contextTokens)} (기준 {TokenFormat.Compact(MaxTokens)})";
         return null;
     }
+
+    /// 같은 도메인의 앞 티켓 세션이 있는데 이 티켓은 아직 그 역할 세션이 없을 때 작업 탭에 남기는 이유
+    public static string NewTicketReason(string previousTicket) => $"새 티켓 (앞: {previousTicket})";
 }
 
 /// `automation\sessions.json`: 레포(또는 `{도메인}:{역할}`) → 지금 세션, 그리고 보관한 옛 세션들. 파이썬 서버(alarms.py)도 읽는다.
@@ -152,6 +162,19 @@ public sealed record WorkSessionBook
         Archived.Add(s);
         Sessions[repo] = new WorkSession("", repo, now) { FreshReason = reason };
         return null;
+    }
+
+    /// 역할 세션을 새 티켓(또는 기준에 걸린 같은 티켓)이 새로 시작할 때 작업 탭 기록을 맞춘다. 앞 세션은 보관하고 이유를 남긴 빈 세션을 둔다.
+    /// `reason` 이 없고 앞 세션이 다른 티켓의 것이면 "새 티켓 (앞: KEY)". 바뀌었으면 true.
+    public bool StartFresh(string repo, string ticket, string? reason, DateTimeOffset now)
+    {
+        Sessions.TryGetValue(repo, out var s);
+        var live = s != null && s.Id.Length > 0;
+        if (reason == null && live && s!.Keys.LastOrDefault() is string previous && previous != ticket) reason = SessionReuse.NewTicketReason(previous);
+        if (!live && reason == null) return false;
+        if (live) Archived.Add(s!);
+        Sessions[repo] = new WorkSession("", repo, now) { FreshReason = reason };
+        return true;
     }
 
     public void Record(string repo, string sessionId, string? key, RunUsage? usage, DateTimeOffset now)
