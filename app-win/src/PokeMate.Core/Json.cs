@@ -77,16 +77,41 @@ public static class Json
     public static JsonNode? Clone(JsonNode? node) => node == null ? null : JsonNode.Parse(node.ToJsonString());
 
     /// 문자열을 JSON 객체로. 객체가 아니거나 깨졌으면 null (Swift `try? JSONSerialization.jsonObject as? [String: Any]`).
-    public static JsonObject? ParseObject(string? text)
+    public static JsonObject? ParseObject(string? text) => Parse(text, JsonValueKind.Object) as JsonObject;
+
+    public static JsonArray? ParseArray(string? text) => Parse(text, JsonValueKind.Array) as JsonArray;
+
+    /// `JsonNode.Parse` 는 같은 키가 두 번 나오면 (.NET 7 에서는 처음 만질 때) 예외를 던진다. 맥 `JSONSerialization` 은 마지막 값을 쓰므로
+    /// (Claude 가 쓴 블록에서 `"note"` 가 겹치는 경우 등) 같은 규칙으로 트리를 직접 만든다.
+    static JsonNode? Parse(string? text, JsonValueKind kind)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
-        try { return JsonNode.Parse(text) as JsonObject; } catch { return null; }
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            return doc.RootElement.ValueKind == kind ? Build(doc.RootElement) : null;
+        }
+        catch { return null; }
     }
 
-    public static JsonArray? ParseArray(string? text)
+    static JsonNode? Build(JsonElement e)
     {
-        if (string.IsNullOrWhiteSpace(text)) return null;
-        try { return JsonNode.Parse(text) as JsonArray; } catch { return null; }
+        switch (e.ValueKind)
+        {
+            case JsonValueKind.Object:
+                var obj = new JsonObject();
+                foreach (var p in e.EnumerateObject()) obj[p.Name] = Build(p.Value);   // 같은 키는 마지막 값
+                return obj;
+            case JsonValueKind.Array:
+                var arr = new JsonArray();
+                foreach (var item in e.EnumerateArray()) arr.Add(Build(item));
+                return arr;
+            case JsonValueKind.String: return JsonValue.Create(e.GetString());
+            case JsonValueKind.Number: return JsonValue.Create(e.Clone());
+            case JsonValueKind.True: return JsonValue.Create(true);
+            case JsonValueKind.False: return JsonValue.Create(false);
+            default: return null;
+        }
     }
 
     public static string ToText(JsonNode? node, bool indented = false) =>
