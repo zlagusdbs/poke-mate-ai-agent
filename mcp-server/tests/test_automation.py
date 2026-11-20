@@ -571,7 +571,7 @@ def test_deploy_approve(env, monkeypatch, capsys):
         return httpx.Response(200, json={"id": 10, "name": "sample-api"})
 
     monkeypatch.setattr(automation.credentials, "load", lambda system: Credential("me", "p"))
-    monkeypatch.setattr(automation, "DeployClient", lambda base, cred: DeployClient(base, cred, httpx.MockTransport(handler)))
+    monkeypatch.setattr(automation, "DeployClient", lambda base, cred, **kw: DeployClient(base, cred, httpx.MockTransport(handler)))
 
     assert run("deploy-approve", "--dry-run") == 0
     out = json.loads(capsys.readouterr().out)

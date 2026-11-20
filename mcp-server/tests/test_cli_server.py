@@ -115,6 +115,42 @@ def test_deploy_client_maps_release():
     assert rows[0]["creatingUser"] == "kim" and rows[0]["created"] == "2026-10-22T10:00"
 
 
+def test_deploy_client_logs_in_on_web_and_sends_cookie_to_api():
+    import httpx
+    from pokemate.deploy_client import DeployClient
+    seen = []
+
+    def handler(r):
+        seen.append((r.method, r.url.host, r.url.path, r.headers.get("authorization"), r.headers.get("cookie")))
+        if r.url.path == "/Account/Authenticate":
+            assert dict(httpx.QueryParams(r.content.decode())) == {"UserId": "u", "Password": "p", "ReturnUrl": ""}
+            return httpx.Response(302, headers={"Location": "/", "Set-Cookie": "AUTH=t1; Domain=.example.com; Path=/"})
+        return httpx.Response(200, json=[])
+
+    client = DeployClient("http://api.example.com", Credential("u", "p"), httpx.MockTransport(handler),
+                          login_url="http://web.example.com/")
+    client.verify()
+    client.approvals()
+    assert [s[:3] for s in seen] == [("POST", "web.example.com", "/Account/Authenticate"),
+                                     ("GET", "api.example.com", "/api/releases"),
+                                     ("GET", "api.example.com", "/api/releases/approvals")]
+    assert all(s[3] is None for s in seen)          # Basic 인증은 보내지 않는다
+    assert seen[1][4] == "AUTH=t1" and seen[2][4] == "AUTH=t1"
+
+
+def test_deploy_client_login_failure_is_auth_expired():
+    import httpx
+    import pytest
+    from pokemate.deploy_client import DeployClient
+    from pokemate.errors import AuthExpired
+    # 비밀번호가 틀리면 로그인 화면으로 되돌려 보내고 쿠키를 주지 않는다
+    handler = lambda r: httpx.Response(302, headers={"Location": "/Account/LogOn?error=1"})
+    client = DeployClient("http://api.example.com", Credential("u", "bad"), httpx.MockTransport(handler),
+                          login_url="http://web.example.com")
+    with pytest.raises(AuthExpired):
+        client.verify()
+
+
 def test_github_tool_not_logged_in(monkeypatch):
     monkeypatch.setattr(server.github_client, "is_logged_in", lambda base_url: False)
     assert server.github_review_requests() == {"error": "NOT_CONNECTED:github"}
