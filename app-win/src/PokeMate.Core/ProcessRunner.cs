@@ -25,22 +25,14 @@ public sealed class ProcessRunner
         var errBuffer = new MemoryStream();
         var outPump = Pump(process.StandardOutput.BaseStream, outBuffer);
         var errPump = Pump(process.StandardError.BaseStream, errBuffer);
-        try
-        {
-            if (stdin != null)
-            {
-                var bytes = Utf8.GetBytes(stdin);
-                await process.StandardInput.BaseStream.WriteAsync(bytes);
-                await process.StandardInput.BaseStream.FlushAsync();
-            }
-        }
-        catch (IOException) { }   // 입력을 읽기 전에 끝난 프로세스
-        try { process.StandardInput.Close(); } catch { }
 
         var timedOut = false;
         using (var cts = new CancellationTokenSource())
         {
+            // 제한 시간은 입력을 쓰기 전에 건다: 자식이 큰 입력(이미지 base64 등)을 읽지 않으면 쓰기가 끝나지 않는다.
+            // 쓰기는 따로 돌리고, 시간이 지나 트리를 끝내면 파이프가 끊겨 쓰기도 끝난다.
             if (timeout is TimeSpan t && t != Timeout.InfiniteTimeSpan) cts.CancelAfter(t);
+            var writer = WriteInput(process.StandardInput.BaseStream, stdin);
             try { await process.WaitForExitAsync(cts.Token); }
             catch (OperationCanceledException)
             {
@@ -48,6 +40,7 @@ public sealed class ProcessRunner
                 KillTree(process);
                 await process.WaitForExitAsync();
             }
+            await Task.WhenAny(writer, Task.Delay(TimeSpan.FromSeconds(5)));
         }
         await Drain(outPump, errPump);
         lock (gate) current = null;
@@ -60,6 +53,23 @@ public sealed class ProcessRunner
         lock (gate) p = current;
         if (p != null) KillTree(p);
     }
+
+    /// 입력을 쓰고 닫는다. 쓰기는 스레드 풀에서 해서 호출한 쪽(화면 스레드 등)을 막지 않는다.
+    static Task WriteInput(Stream input, string? stdin) => Task.Run(() =>
+    {
+        try
+        {
+            if (stdin != null)
+            {
+                var bytes = Utf8.GetBytes(stdin);
+                input.Write(bytes, 0, bytes.Length);
+                input.Flush();
+            }
+        }
+        catch (IOException) { }   // 입력을 읽기 전에 끝난 프로세스
+        catch (ObjectDisposedException) { }
+        try { input.Close(); } catch { }
+    });
 
     internal static ProcessStartInfo StartInfo(string executable, IReadOnlyList<string> arguments, string? workDir, IDictionary<string, string>? environment)
     {
@@ -137,8 +147,8 @@ public sealed class InteractiveProcess
         }
         var errBuffer = new MemoryStream();
         var errPump = ProcessRunner.Pump(process.StandardError.BaseStream, errBuffer);
-        Send(firstLine);
 
+        // 감시는 첫 줄을 보내기 전에 건다. 첫 줄(이미지가 든 질문)은 스레드 풀에서 써서 화면 스레드를 막지 않는다.
         var timedOut = false;
         using var watchdogCancel = new CancellationTokenSource();
         var watchdog = Task.Run(async () =>
@@ -151,6 +161,7 @@ public sealed class InteractiveProcess
                 ProcessRunner.KillTree(process);
             }
         });
+        Send(firstLine);
 
         var outData = new StringBuilder();
         var stdout = process.StandardOutput.BaseStream;
@@ -194,40 +205,48 @@ public sealed class InteractiveProcess
 
         watchdogCancel.Cancel();
         CloseInput();
-        if (!process.WaitForExit(TimeSpan.FromSeconds(10))) ProcessRunner.KillTree(process);
+        var exited = process.WaitForExitAsync();
+        if (await Task.WhenAny(exited, Task.Delay(TimeSpan.FromSeconds(10))) != exited) ProcessRunner.KillTree(process);
         await process.WaitForExitAsync();
         await ProcessRunner.Drain(errPump);
         lock (gate) current = null;
         return new ProcessOutput(outData.ToString(), ProcessRunner.Decode(errBuffer), process.ExitCode, timedOut);
     }
 
+    /// 입력 쓰기는 이 순서대로 스레드 풀에서 한다 (자식이 입력을 읽지 않아도 부르는 쪽은 막히지 않는다).
+    Task writes = Task.CompletedTask;
+
+    /// 한 줄을 보낸다. 바로 돌아오고, 쓰기는 앞서 보낸 줄 다음에 이어서 한다.
     public void Send(string line)
     {
-        Stream? s;
-        lock (gate) s = input;
-        if (s == null) return;
-        try
-        {
-            var bytes = ProcessRunner.Utf8.GetBytes(line);
-            lock (s)
-            {
-                s.Write(bytes, 0, bytes.Length);
-                s.Flush();
-            }
-        }
-        catch (IOException) { }
-        catch (ObjectDisposedException) { }
-    }
-
-    public void CloseInput()
-    {
-        Stream? s;
         lock (gate)
         {
-            s = input;
-            input = null;
+            var s = input;
+            if (s == null) return;
+            var bytes = ProcessRunner.Utf8.GetBytes(line);
+            writes = writes.ContinueWith(_ =>
+            {
+                try
+                {
+                    s.Write(bytes, 0, bytes.Length);
+                    s.Flush();
+                }
+                catch (IOException) { }
+                catch (ObjectDisposedException) { }
+            }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
         }
-        try { s?.Close(); } catch { }
+    }
+
+    /// 입력을 닫는다. 앞서 보낸 줄을 다 쓴 뒤에 닫고, 그 뒤의 Send 는 무시한다.
+    public void CloseInput()
+    {
+        lock (gate)
+        {
+            var s = input;
+            input = null;
+            if (s == null) return;
+            writes = writes.ContinueWith(_ => { try { s.Close(); } catch { } }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+        }
     }
 
     public void Cancel()

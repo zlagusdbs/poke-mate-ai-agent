@@ -189,8 +189,6 @@ public static class Rules
         return text;
     }
 
-    static readonly UTF8Encoding Utf8 = new(false);
-
     /// 새 규칙·스킬 파일. 이름은 글자·숫자·-·_ 만 남긴다. 이미 있으면 그 파일. 스킬은 머리말 틀을 넣어 준다.
     /// local 폴더가 없으면 LocalMissingException.
     public static string Create(string name, Kind kind, Layer layer = Layer.Local)
@@ -205,7 +203,7 @@ public static class Rules
             var body = kind == Kind.Skill
                 ? $"---\ndescription: {stem} 관련 안내 (한 줄 설명)\nkeywords: {stem}\n---\n# {stem}\n\n- \n"
                 : $"# {stem}\n\n- \n";
-            System.IO.File.WriteAllText(url, body, Utf8);
+            AppPaths.WriteAtomic(url, body);
         }
         return url;
     }
@@ -230,7 +228,7 @@ public static class Rules
         try { body = System.IO.File.ReadAllText(url); } catch { body = $"# {safe}\n\n"; }
         if (!body.EndsWith('\n')) body += "\n";
         body += $"- {text.Trim()}\n";
-        System.IO.File.WriteAllText(url, body, Utf8);
+        AppPaths.WriteAtomic(url, body);
         return url;
     }
 

@@ -6,14 +6,19 @@ namespace PokeMate.CoreChecks;
 // Review Focus 1·5: 공백·한글 경로와 인자, 프로세스 트리째 종료
 public static class ProcessRunnerChecks
 {
-    /// 이 검사 프로그램 자신을 하위 프로세스로 부르는 방법 (apphost exe, 또는 dotnet + dll)
+    /// 이 검사 프로그램 자신을 하위 프로세스로 부르는 방법: 늘 dotnet 호스트 + dll (apphost exe 는 만들지도 부르지도 않는다)
     public static (string exe, List<string> prefix) Self(string? baseDir = null)
     {
         var dir = baseDir ?? AppContext.BaseDirectory;
-        var apphost = Path.Combine(dir, "PokeMate.CoreChecks.exe");
-        if (File.Exists(apphost)) return (apphost, new List<string>());
-        return ("dotnet", new List<string> { Path.Combine(dir, "PokeMate.CoreChecks.dll") });
+        var host = Environment.ProcessPath is string p && Path.GetFileNameWithoutExtension(p).Equals("dotnet", StringComparison.OrdinalIgnoreCase) ? p : "dotnet";
+        return (host, new List<string> { Path.Combine(dir, "PokeMate.CoreChecks.dll") });
     }
+
+    /// 다른 폴더에서 dotnet 으로 실행하는 데 필요한 파일만 (exe 는 복사하지 않는다)
+    public static readonly string[] RunFiles =
+    {
+        "PokeMate.CoreChecks.dll", "PokeMate.CoreChecks.runtimeconfig.json", "PokeMate.CoreChecks.deps.json", "PokeMate.Core.dll",
+    };
 
     static bool Alive(int pid)
     {
@@ -40,8 +45,10 @@ public static class ProcessRunnerChecks
         var korean = Path.Combine(root, "홍 길동");
         var bin = Path.Combine(korean, "bin");
         Directory.CreateDirectory(bin);
-        foreach (var f in Directory.GetFiles(AppContext.BaseDirectory)) File.Copy(f, Path.Combine(bin, Path.GetFileName(f)));
+        foreach (var f in RunFiles) File.Copy(Path.Combine(AppContext.BaseDirectory, f), Path.Combine(bin, f));
         var (exe, prefix) = Self(bin);
+        Check.That(!Directory.GetFiles(bin).Any(f => f.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) && prefix.Single().StartsWith(korean, StringComparison.Ordinal),
+                   "process: 한글·공백 경로에는 dll 과 실행 설정만 복사하고 dotnet 으로 부름 (exe 없음)");
 
         // 1. 공백·한글이 든 실행 파일 경로, 인자, 작업 폴더, 환경 변수
         var weird = new[] { @"C:\Users\홍 길동\.local\bin\claude.exe", "두 단어", "", "따옴표\"안", @"끝이 역슬래시\", "a b\\\"c", "--flag=값 있음" };
@@ -81,6 +88,28 @@ public static class ProcessRunnerChecks
         var pid2 = await WaitPid(pidFile2);
         await Task.Delay(300);
         Check.That(timed.TimedOut && pid2 != null && !Alive(pid2.Value), "process: 제한 시간 넘기면 자식까지 끝남");
+
+        // 자식이 큰 입력을 읽지 않아도 제한 시간은 지킨다 (쓰기 전에 시간을 건다)
+        var big = new string('가', 4 * 1024 * 1024);
+        var pidFile4 = Path.Combine(root, "child4.pid");
+        var sw4 = Stopwatch.StartNew();
+        var stuck = await new ProcessRunner().Run(self.exe, self.prefix.Concat(new[] { "--sleep", pidFile4 }).ToList(), stdin: big, timeout: TimeSpan.FromSeconds(3));
+        var pid4 = await WaitPid(pidFile4);
+        await Task.Delay(300);
+        Check.That(stuck.TimedOut && sw4.Elapsed < TimeSpan.FromSeconds(15) && pid4 != null && !Alive(pid4.Value),
+                   "process: 입력을 읽지 않는 자식에 큰 입력을 줘도 제한 시간에 끝남");
+
+        // 대화도 마찬가지: 첫 줄 쓰기가 부르는 쪽을 막지 않고, 감시는 쓰기 전에 걸림
+        var pidFile5 = Path.Combine(root, "child5.pid");
+        var sw5 = Stopwatch.StartNew();
+        var stuckTalk = new InteractiveProcess().Run(self.exe, self.prefix.Concat(new[] { "--sleep", pidFile5 }).ToList(), firstLine: big + '\n',
+                                                     workDir: null, environment: null, timeout: TimeSpan.FromSeconds(3), onLine: (_, _) => Task.CompletedTask);
+        var returnedAfter = sw5.Elapsed;
+        var stuckTalkResult = await stuckTalk;
+        var pid5 = await WaitPid(pidFile5);
+        await Task.Delay(300);
+        Check.That(returnedAfter < TimeSpan.FromSeconds(2) && stuckTalkResult.TimedOut && sw5.Elapsed < TimeSpan.FromSeconds(20) && pid5 != null && !Alive(pid5.Value),
+                   $"process: 대화의 큰 첫 줄은 비동기로 쓰고 제한 시간에 끝남 ({returnedAfter.TotalSeconds:0.0}s, {sw5.Elapsed.TotalSeconds:0.0}s)");
 
         // 대화(InteractiveProcess)도 취소하면 자식까지
         var pidFile3 = Path.Combine(root, "child3.pid");

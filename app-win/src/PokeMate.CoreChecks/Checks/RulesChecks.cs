@@ -51,6 +51,8 @@ public static class RulesChecks
         Check.That(appended == created && File.ReadAllText(created).EndsWith("- 한 줄\n"), "rules: 같은 이름의 스킬이 있으면 스킬에 한 줄 추가");
         var inRules = Rules.Append("기억", "새주제");
         Check.That(inRules == Path.Combine(repo.Local, "rules", "새주제.md") && File.ReadAllText(inRules) == "# 새주제\n\n- 기억\n", "rules: 없으면 rules\\ 에 만들어 추가");
+        Check.That(new[] { Path.GetDirectoryName(created)!, Path.GetDirectoryName(inRules)! }.SelectMany(Directory.GetFiles).All(f => !Path.GetFileName(f).Contains(".tmp-", StringComparison.Ordinal))
+                   && File.ReadAllBytes(inRules)[0] == (byte)'#', "rules: 원자적으로 저장 (임시 파일 남지 않음, BOM 없음)");
         Check.That(Rules.Files().Select(f => f.Name).Contains("skills/wiki규칙.md") && Rules.Files().Select(f => f.Name).Contains("rules/새주제.md"), "rules: 파일 목록");
         Check.That(Rules.Prompt("wiki규칙 알려줘").Contains("## skills/wiki규칙.md"), "rules: 만든 스킬이 질문의 키워드와 맞으면 본문이 붙음");
         using (var none = new Check.TempRepo(withLocal: false))
