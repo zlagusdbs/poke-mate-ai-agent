@@ -611,7 +611,6 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
                 RunRole(chat, $"{start.Key} · {domain}:{role.Raw()}", prompt, access, timeout, sessionId, newSessionId),
             helper: args => RunHelper(args, settings),
             diff: worktree => WorktreeDiff(worktree, settings),
-            sessionId: key => Task.FromResult(ReuseSession(key)),
             recordSession: (sessionKey, id, ticket, usage) =>
             {
                 RecordRoleSession(sessionKey, id, ticket, usage);
@@ -627,12 +626,25 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
             {
                 OnPipelineNotice?.Invoke(noticeTitle, body);
                 return Task.CompletedTask;
+            },
+            policy: () => new SessionReuse(AppPaths.LoadSettings()),
+            sessionChosen: (sessionKey, ticket, resumeId, reason) =>
+            {
+                ChooseRoleSession(sessionKey, ticket, resumeId, reason);
+                return Task.CompletedTask;
             });
         var final = await JiraPipeline.Run(start, io, config);
         SetRunning(domain, null);
         SetPipeline(domain, final);
         RefreshMonth();
         return final;
+    }
+
+    /// 역할 세션을 고른 결과를 작업 탭 기록(`{도메인}:{역할}`)에 맞춘다. 이어 쓰면 그대로, 새로 시작하면 앞 세션을 보관하고 이유(새 티켓·식음·문맥)를 남긴다.
+    void ChooseRoleSession(string sessionKey, string ticket, string? resumeId, string? reason)
+    {
+        if (resumeId != null) return;
+        if (book.StartFresh(sessionKey, ticket, reason, DateTimeOffset.Now)) Save();
     }
 
     void RecordRoleSession(string sessionKey, string id, string ticket, RunUsage? usage)

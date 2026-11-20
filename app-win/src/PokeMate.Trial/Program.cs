@@ -77,7 +77,6 @@ var io = new PipelineIO(
         }
         catch { return null; }
     },
-    sessionId: k => Task.FromResult(book.Id(k)),
     recordSession: (k, id, ticket, usage) =>
     {
         book.Record(k, id, ticket, usage);
@@ -93,6 +92,11 @@ var io = new PipelineIO(
     notice: (title, body) =>
     {
         Line($"알림 {title}: {body}");
+        return Task.CompletedTask;
+    },
+    sessionChosen: (k, ticket, resumeId, reason) =>
+    {
+        book.Chose(k, ticket, resumeId, reason);
         return Task.CompletedTask;
     });
 
@@ -145,9 +149,14 @@ sealed class Book
         book = WorkSessionBook.Load(file);
     }
 
-    public string? Id(string key)
+    /// 앱과 같은 방식: 새로 시작하면 앞 세션을 보관하고 이유(새 티켓 등)를 남긴다
+    public void Chose(string key, string ticket, string? resumeId, string? reason)
     {
-        lock (gate) return book.ResumeId(key);
+        if (resumeId != null) return;
+        lock (gate)
+        {
+            if (book.StartFresh(key, ticket, reason, DateTimeOffset.Now)) book.Save(file);
+        }
     }
 
     public void Record(string key, string id, string ticket, RunUsage? usage)

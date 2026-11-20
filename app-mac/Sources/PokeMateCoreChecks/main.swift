@@ -1082,7 +1082,6 @@ actor PipelineScript {
         return (true, "ok")
     }
     func record(_ key: String, _ id: String) { sessions[key] = id }
-    func session(_ key: String) -> String? { sessions[key] }
     func setFailPush() { failPush = true }
 }
 
@@ -1090,14 +1089,14 @@ func nextBlock(_ next: String, _ extra: String = "") -> String {
     "답 본문\n```pokemate-next\n{\"next\": \"\(next)\", \"note\": \"\(next) 로 넘김\"\(extra)}\n```"
 }
 
-func pipelineIO(_ script: PipelineScript) -> PipelineIO {
+func pipelineIO(_ script: PipelineScript, policy: SessionReuse? = nil) -> PipelineIO {
     PipelineIO(runRole: { role, prompt, resume, fresh, access in await script.answer(role, prompt, access, resume: resume, fresh: fresh) },
                helper: { args in await script.helper(args) },
                diff: { _ in "diff --git a/x b/x" },
-               sessionId: { key in await script.session(key) },
                recordSession: { key, id, _, _ in await script.record(key, id) },
                save: { _ in },
-               notice: { title, _ in await script.noticed(title) })
+               notice: { title, _ in await script.noticed(title) },
+               policy: { policy ?? SessionReuse() })
 }
 
 do {
@@ -1182,6 +1181,87 @@ do {
           && prompts[5].1.contains(JiraPipeline.resumeNote) && !prompts[0].1.contains(JiraPipeline.resumeNote) && abs(done.totalCost - 6.0) < 0.001,
           "pipeline: 역할 세션은 {도메인}:{역할} 로 기록·이어 쓰기, 역할별 비용 합산")
 
+    // 티켓별 역할 세션: 같은 티켓 안에서만 이어 쓰고, 다른 티켓은 같은 도메인이어도 새로 시작
+    check(done.sessions?.count == 4 && done.sessions?["dev"]?.id == "s-dev" && done.sessions?["pm"]?.contextTokens == 0
+          && Set(done.sessions?.keys.map { $0 } ?? []) == ["pm", "dev", "tester", "reviewer"] && start.sessions == nil,
+          "ticket-session: 티켓 상태에 역할별 세션(id·마지막 사용·문맥 토큰)이 기록됨")
+    let reviewerRuns = zip(prompts.map(\.0), storyRuns).filter { $0.0 == .reviewer }.map(\.1)
+    check(reviewerRuns.count == 2 && reviewerRuns.allSatisfy { $0.0 == nil && $0.1 != nil } && storyRuns[4].0 == "s-tester" && storyRuns[3].0 == "s-dev",
+          "ticket-session: 같은 티켓 안에서 테스터·개발·PM 은 --resume, 리뷰어는 늘 새로 (기본 설정)")
+    func resumed(_ from: PipelineState, at stage: PipelineState.Stage) -> PipelineState {
+        var c = from
+        c.stage = stage
+        c.worktree = "/tmp/acme-ws/.jira-auto-worktrees/ACME-1"
+        c.repo = "acme-sample-service"
+        c.mustStop = false
+        return c
+    }
+    var second = PipelineState(key: "ACME-2", title: "other ticket", event: "e", domain: "acme", repo: "acme-sample-service", timeoutMinutes: 30, now: Date())
+    second.stage = .dev
+    second.worktree = "/tmp/acme-ws/.jira-auto-worktrees/ACME-1"
+    let otherScript = PipelineScript([.dev: [nextBlock("tester")], .tester: [nextBlock("pm")], .pm: [nextBlock("stop")]])
+    let otherDone = await JiraPipeline.run(second, io: pipelineIO(otherScript), config: config)
+    let otherRuns = await otherScript.runs
+    check(otherDone.stage == .done && otherRuns.count == 3 && otherRuns.allSatisfy { $0.0 == nil && $0.1 != nil },
+          "ticket-session: 같은 도메인의 다른 티켓은 역할 세션을 새로 시작 (--session-id)")
+    let againScript = PipelineScript([.dev: [nextBlock("pm")], .pm: [nextBlock("stop")]])
+    let againDone = await JiraPipeline.run(resumed(otherDone, at: .dev), io: pipelineIO(againScript), config: config)
+    let againRuns = await againScript.runs
+    check(againDone.stage == .done && againRuns.map(\.0) == ["s-dev", "s-pm"] && againRuns.allSatisfy { $0.1 == nil },
+          "ticket-session: 같은 티켓의 다음 실행(55분 안)은 그 티켓 세션을 이어 씀")
+    var stale = resumed(otherDone, at: .dev)
+    stale.sessions?["dev"]?.lastUsed = Date().addingTimeInterval(-61 * 60)
+    stale.sessions?["pm"]?.contextTokens = 130_000
+    let staleScript = PipelineScript([.dev: [nextBlock("pm")], .pm: [nextBlock("stop")]])
+    let staleDone = await JiraPipeline.run(stale, io: pipelineIO(staleScript), config: config)
+    let staleRuns = await staleScript.runs
+    check(staleRuns.count == 2 && staleRuns.allSatisfy { $0.0 == nil && $0.1 != nil } && staleDone.sessions?["dev"]?.id == "s-dev",
+          "ticket-session: 같은 티켓이라도 55분이 지나거나 문맥이 12만 토큰 이상이면 새로 시작")
+    let alwaysScript = PipelineScript([.dev: [nextBlock("pm")], .pm: [nextBlock("stop")]])
+    _ = await JiraPipeline.run(stale, io: pipelineIO(alwaysScript, policy: SessionReuse(idleMinutes: 0, maxTokens: 0, freshReviewer: true)), config: config)
+    let alwaysRuns = await alwaysScript.runs
+    check(alwaysRuns.map(\.0) == ["s-dev", "s-pm"], "ticket-session: 분·토큰 기준을 0(끔)으로 두면 같은 티켓 안에서는 늘 이어 씀")
+    let nowT = Date()
+    let pol = SessionReuse()
+    let none = PipelineState(key: "ACME-3", title: "t", event: "e", domain: "acme", repo: nil, timeoutMinutes: 30, now: nowT).reuseSession(for: .dev, policy: pol, now: nowT)
+    check(none.id == nil && none.reason == nil
+          && stale.reuseSession(for: .dev, policy: pol, now: nowT).reason?.hasPrefix("식음 6") == true
+          && stale.reuseSession(for: .pm, policy: pol, now: nowT).reason == "문맥 130.0K (기준 120.0K)"
+          && otherDone.reuseSession(for: .reviewer, policy: pol, now: nowT).id == nil && otherDone.reuseSession(for: .dev, policy: pol, now: nowT).id == "s-dev",
+          "ticket-session: 티켓 세션 고르기 — 없으면 (nil,nil), 기준에 걸리면 이유")
+    var rv = resumed(otherDone, at: .reviewer)
+    rv.recordSession(role: .reviewer, id: "s-r", usage: nil, now: nowT)
+    check(rv.reuseSession(for: .reviewer, policy: pol, now: nowT).reason == SessionReuse.reviewerReason && rv.reuseSession(for: .reviewer, policy: pol, now: nowT).id == nil
+          && rv.reuseSession(for: .reviewer, policy: SessionReuse(freshReviewer: false), now: nowT).id == "s-r",
+          "ticket-session: 리뷰어는 늘 새로 (설정을 끄면 같은 기준)")
+
+    // 작업 탭 기록 {도메인}:{역할}: 다른 티켓이 새로 시작하면 앞 세션은 보관하고 "새 티켓 (앞: KEY)"
+    var tab = WorkSessionBook()
+    let tt = Date()
+    tab.record(repo: "acme:dev", sessionId: "s-a", key: "ACME-100", usage: RunUsage(costUSD: 1), now: tt)
+    let noChange = tab.startFresh(repo: "acme:pm", ticket: "ACME-100", reason: nil, now: tt)
+    let changed = tab.startFresh(repo: "acme:dev", ticket: "ACME-101", reason: nil, now: tt)
+    check(!noChange && changed && tab.sessions["acme:dev"]?.id == "" && tab.sessions["acme:dev"]?.freshReason == "새 티켓 (앞: ACME-100)" && tab.archived.map(\.id) == ["s-a"],
+          "ticket-session: 작업 탭 기록은 새 티켓이면 앞 세션 보관 + 이유 '새 티켓 (앞: KEY)'")
+    tab.record(repo: "acme:dev", sessionId: "s-b", key: "ACME-101", usage: nil, now: tt)
+    let sameTicket = tab.startFresh(repo: "acme:dev", ticket: "ACME-101", reason: "식음 61분 (기준 55분)", now: tt)
+    check(sameTicket && tab.sessions["acme:dev"]?.freshReason == "식음 61분 (기준 55분)" && tab.archived.count == 2,
+          "ticket-session: 같은 티켓이 기준에 걸리면 그 이유 그대로 (기존 문구)")
+
+    // sessions 가 없는 옛 진행 파일도 읽고, 있으면 왕복 (JSON 모양은 윈도우와 같음)
+    let sessionDir = FileManager.default.temporaryDirectory.appendingPathComponent("pm-ticket-sessions-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+    let oldJSON = #"{"costs":{},"create":[],"createdAt":"2026-11-17T08:00:00Z","domain":"acme","event":"e","history":[],"key":"ACME-9","mustStop":false,"note":"","reviewerBacks":0,"stage":"dev","summary":"","testerBacks":0,"testsPassed":false,"timeoutMinutes":30,"title":"t","updatedAt":"2026-11-17T08:00:00Z"}"#
+    try? oldJSON.write(to: sessionDir.appendingPathComponent("ACME-9.json"), atomically: true, encoding: .utf8)
+    let oldState = PipelineState.load(key: "ACME-9", in: sessionDir)
+    otherDone.save(in: sessionDir)
+    let withSessions = (try? String(contentsOf: sessionDir.appendingPathComponent("ACME-2.json"), encoding: .utf8)) ?? ""
+    let sessionBack = PipelineState.load(key: "ACME-2", in: sessionDir)
+    check(oldState?.stage == .dev && oldState?.sessions == nil && withSessions.contains("\"sessions\" : {") && withSessions.contains("\"contextTokens\"") && withSessions.contains("\"lastUsed\" : \"")
+          && sessionBack?.sessions?["dev"]?.id == "s-dev",
+          "ticket-session: sessions 가 없는 옛 진행 파일도 읽고, sessions {역할: {id, lastUsed, contextTokens}} 저장·읽기")
+    try? FileManager.default.removeItem(at: sessionDir)
+
     let limit = PipelineScript([
         .pm: [pmDev, nextBlock("stop", #", "waiting": true"#)],
         .dev: [nextBlock("tester"), nextBlock("tester"), nextBlock("tester")],
@@ -1248,7 +1328,7 @@ do {
     check(lost.stage == .done && lostRuns.count == 3 && lostRuns[0].0 == "s-cut" && lostRuns[1].0 == nil && lostRuns[1].1 != nil
           && lostPrompts.first?.1.hasPrefix(JiraPipeline.interruptedNote) == true, "pipeline: 끊긴 세션이 없으면 새 세션으로, 이미 한 일 확인 지시와 함께")
     let quitIO = PipelineIO(runRole: { _, _, _, _, _ in PipelineRoleResult(interrupted: true) },
-                            helper: { _ in (true, "") }, diff: { _ in "" }, sessionId: { _ in nil }, recordSession: { _, _, _, _ in }, save: { _ in })
+                            helper: { _ in (true, "") }, diff: { _ in "" }, recordSession: { _, _, _, _ in }, save: { _ in })
     let quit = await JiraPipeline.run(cut, io: quitIO, config: config)
     check(quit.stage == .dev && quit.inflight?.role == "dev" && quit.reason == nil, "pipeline: 앱 종료로 끊기면 멈춤 처리 없이 실행 중 기록을 남김")
     let fresh = ClaudeCommand.arguments(sessionId: nil, mcpConfigPath: "/c.json", systemPrompt: "s", newSessionId: "abc")

@@ -104,18 +104,30 @@ public struct SessionReuse: Equatable, Sendable {
     public static let always = SessionReuse(idleMinutes: 0, maxTokens: 0, freshReviewer: false)
 
     public func freshReason(for session: WorkSession, now: Date) -> String? {
-        if freshReviewer, PipelineRole.split(session.repo)?.role == .reviewer {
+        freshReason(reviewer: PipelineRole.split(session.repo)?.role == .reviewer, lastUsed: session.lastUsed, contextTokens: session.contextTokens, now: now)
+    }
+
+    /// 티켓 하나의 역할 세션(`pipelines/{KEY}.json` 의 sessions)에 같은 기준을 쓴다.
+    public func freshReason(for session: PipelineSession, role: PipelineRole, now: Date) -> String? {
+        freshReason(reviewer: role == .reviewer, lastUsed: session.lastUsed, contextTokens: session.contextTokens, now: now)
+    }
+
+    private func freshReason(reviewer: Bool, lastUsed: Date, contextTokens: Int, now: Date) -> String? {
+        if freshReviewer, reviewer {
             return Self.reviewerReason
         }
-        let idle = Int(now.timeIntervalSince(session.lastUsed) / 60)
+        let idle = Int(now.timeIntervalSince(lastUsed) / 60)
         if idleMinutes > 0 && idle >= idleMinutes {
             return "식음 \(idle)분 (기준 \(idleMinutes)분)"
         }
-        if maxTokens > 0 && session.contextTokens >= maxTokens {
-            return "문맥 \(TokenFormat.compact(session.contextTokens)) (기준 \(TokenFormat.compact(maxTokens)))"
+        if maxTokens > 0 && contextTokens >= maxTokens {
+            return "문맥 \(TokenFormat.compact(contextTokens)) (기준 \(TokenFormat.compact(maxTokens)))"
         }
         return nil
     }
+
+    /// 같은 도메인의 앞 티켓 세션이 있는데 이 티켓은 아직 그 역할 세션이 없을 때 작업 탭에 남기는 이유
+    public static func newTicketReason(previous: String) -> String { "새 티켓 (앞: \(previous))" }
 }
 
 public struct WorkSessionBook: Codable, Equatable, Sendable {
@@ -166,6 +178,22 @@ public struct WorkSessionBook: Codable, Equatable, Sendable {
         fresh.freshReason = reason
         sessions[repo] = fresh
         return nil
+    }
+
+    /// 역할 세션을 새 티켓(또는 기준에 걸린 같은 티켓)이 새로 시작할 때 작업 탭 기록을 맞춘다. 앞 세션은 보관하고 이유를 남긴 빈 세션을 둔다.
+    /// `reason` 이 없고 앞 세션이 다른 티켓의 것이면 "새 티켓 (앞: KEY)". 바뀌었으면 true.
+    @discardableResult
+    public mutating func startFresh(repo: String, ticket: String, reason: String?, now: Date) -> Bool {
+        let current = sessions[repo]
+        let live = current.map { !$0.id.isEmpty } ?? false
+        var reason = reason
+        if reason == nil, live, let previous = current?.keys.last, previous != ticket { reason = SessionReuse.newTicketReason(previous: previous) }
+        if !live && reason == nil { return false }
+        if live, let current { archived.append(current) }
+        var fresh = WorkSession(id: "", repo: repo, now: now)
+        fresh.freshReason = reason
+        sessions[repo] = fresh
+        return true
     }
 
     public mutating func record(repo: String, sessionId: String, key: String?, usage: RunUsage?, now: Date) {

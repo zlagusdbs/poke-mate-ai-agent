@@ -394,7 +394,6 @@ extension WorkSessionCenter {
             },
             helper: { args in await Self.runHelper(args, settings: settings) },
             diff: { worktree in await Self.worktreeDiff(worktree) },
-            sessionId: { [weak self] key in await self?.reuseSession(key) },
             recordSession: { [weak self] sessionKey, id, ticket, usage in
                 await self?.recordRoleSession(sessionKey, id: id, ticket: ticket, usage: usage)
             },
@@ -404,12 +403,22 @@ extension WorkSessionCenter {
             },
             notice: { [weak self] title, body in
                 await self?.pipelineNotice(title, body)
+            },
+            policy: { SessionReuse(settings: AppPaths.loadSettings()) },
+            sessionChosen: { [weak self] sessionKey, ticket, resumeId, reason in
+                await self?.chooseRoleSession(sessionKey, ticket: ticket, resumeId: resumeId, reason: reason)
             })
         let final = await JiraPipeline.run(start, io: io, config: config)
         running[domain] = nil
         pipelines[domain] = final
         refreshMonth()
         return final
+    }
+
+    /// 역할 세션을 고른 결과를 작업 탭 기록(`{도메인}:{역할}`)에 맞춘다. 이어 쓰면 그대로, 새로 시작하면 앞 세션을 보관하고 이유(새 티켓·식음·문맥)를 남긴다.
+    private func chooseRoleSession(_ sessionKey: String, ticket: String, resumeId: String?, reason: String?) {
+        guard resumeId == nil else { return }
+        if book.startFresh(repo: sessionKey, ticket: ticket, reason: reason, now: Date()) { save() }
     }
 
     private func recordRoleSession(_ sessionKey: String, id: String, ticket: String, usage: RunUsage?) {
