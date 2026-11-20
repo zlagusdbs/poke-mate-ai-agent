@@ -206,11 +206,21 @@ uv --directory <저장소>/mcp-server run --quiet pokemate auto <하위명령> [
 
 ## 준비물
 
+**macOS**
+
 - macOS 15 이상, Xcode Command Line Tools (`xcode-select --install`)
 - [Claude Code](https://code.claude.com) CLI
 - [uv](https://docs.astral.sh/uv/) (`brew install uv`)
 - (선택) [GitHub CLI](https://cli.github.com) `gh` — GitHub 이벤트용
 - (선택) claude.ai → 설정 → 커넥터에서 Microsoft 365 연결
+
+**Windows** (11 기준)
+
+- .NET SDK 7.0 이상과 .NET Desktop Runtime (`net7.0-windows`. 앱은 프레임워크 의존이라 런타임을 같이 내려받지 않는다)
+- [Claude Code](https://code.claude.com) CLI (`%USERPROFILE%\.local\bin\claude.exe`)
+- [uv](https://docs.astral.sh/uv/) (설치 스크립트 기본 위치 `%USERPROFILE%\.local\bin\uv.exe`). Python 3.12 는 uv 가 받는다.
+- [Git for Windows](https://git-scm.com/download/win) — Claude Code 의 Bash 가 Git Bash 로 돌고, `{{helper}}` 명령과 `run-tests` 가 이것으로 실행된다
+- (선택) GitHub CLI `gh`, claude.ai 의 Microsoft 365 커넥터는 맥과 같다
 
 ## 설치
 
@@ -230,6 +240,34 @@ cd mcp-server && uv sync && uv run pytest && cd ..
 open app-mac/build/PokeMate.app
 ```
 
+### Windows 설치
+
+PowerShell 에서 (저장소는 길지 않은 경로에 두고 `git config core.longpaths true` 를 켜 둔다):
+
+```powershell
+git clone https://github.com/zlagusdbs/poke-mate-ai-agent.git $env:USERPROFILE\Workspace\poke-mate-ai-agent
+cd $env:USERPROFILE\Workspace\poke-mate-ai-agent
+
+# 1. 이 PC 의 설정 폴더 local\ (Git 에 올라가지 않는다. 다른 PC 에서 쓰던 local\ 이 있으면 그것을 복사)
+Copy-Item -Recurse local.example local
+#    → local\connections.json 의 baseUrl 을 실제 주소로 바꾼다
+
+# 2. MCP 서버
+cd mcp-server; uv sync; uv run pytest; cd ..
+
+# 3. 앱 묶기와 설치
+.\app-win\scripts\bundle.ps1
+.\app-win\scripts\install.ps1
+```
+
+- `bundle.ps1`: `dotnet publish` 로 `app-win\build\PokeMate\` 를 만든다.
+- `install.ps1`: 실행 중인 `PokeMate.exe` 를 끄고 `%LOCALAPPDATA%\Programs\PokeMate` 로 복사한 뒤 시작 메뉴에 `PokeMate` 바로 가기를 만든다. 앱은 켜지 않으므로 시작 메뉴에서 `PokeMate` 를 실행한다. 트레이 아이콘이 안 보이면 작업 표시줄의 숨겨진 아이콘(^)을 열어 끌어 올린다.
+- 설정의 "Windows 시작 시 실행" 스위치를 켜면 로그인할 때 자동으로 켜진다(기본 꺼짐).
+- 데이터 폴더는 `%LOCALAPPDATA%\poke-mate`(환경 변수 `POKEMATE_DATA_DIR` 가 있으면 그 폴더), 저장소 기본 위치는 `%USERPROFILE%\Workspace\poke-mate-ai-agent`, `claudePath`·`uvPath` 기본값은 `%USERPROFILE%\.local\bin` 의 `claude.exe`·`uv.exe`. 연결 계정은 Windows 자격 증명 관리자(서비스 이름 `poke-mate`)에 저장한다.
+- 명령 알람은 `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command` 로 실행한다. 맥에서 가져온 `local\` 의 `./gradlew` 같은 명령은 Git Bash 로 도는 곳(`run-tests`)에서만 그대로 동작한다. `~/` 경로는 홈 폴더로 풀린다.
+- 알림은 트레이 풍선 알림(Windows 알림 센터에 뜬다)이고, 기본 단축키는 `Ctrl+Alt+Shift+Space`.
+- 앱의 Claude 로그인 정보는 데이터 폴더의 `claude-config` 에 따로 두며 `~\.claude` 의 로그인과 섞지 않는다.
+
 ### 설정은 어디에
 
 설정은 레포 한 곳(`~/Workspace/poke-mate-ai-agent`)에서 찾는다. 세 층을 아래부터 차례로 덮어쓴다(같은 이름이면 위 층이 이김).
@@ -239,7 +277,7 @@ open app-mac/build/PokeMate.app
 | 기본 | `~/.claude/skills`, `~/.claude/rules` | 회사·개인 지식(Claude Code 와 같이 씀) | 레포 밖 |
 | 일반 | `shared/CLAUDE.md`, `shared/skills/`, `shared/rules/`, `shared/prompts/` | 회사 값 없는 일반 지시·알람 프롬프트 뼈대. 앱이 직접 읽는다 | 올라감 |
 | 회사·개인 | `local/` (CLAUDE.md, skills/, rules/, prompts/, alarms.json, alarm-groups.json, write-tools.json, pipeline-tools.json, domains.json, connections.json, bundle.json, banned-terms.txt) | 이 PC 의 회사 값과 알람 | 안 올라감 |
-| 실행 기록 | `~/Library/Application Support/poke-mate/` | settings.json(레포 위치 등), 대화·세션·로그·캐시·로그인·웹훅 주소 | 레포 밖 |
+| 실행 기록 | `~/Library/Application Support/poke-mate/` (Windows: `%LOCALAPPDATA%\poke-mate`) | settings.json(레포 위치 등), 대화·세션·로그·캐시·로그인·웹훅 주소 | 레포 밖 |
 
 - `shared/app/` 은 앱 자체의 시스템 안내(`system.md`, `daily-report.md`)라 설정 목록에 보이지 않는다.
 - `local/` 이 없거나 ⚙︎ 설정의 "메이트 저장소"가 틀리면 알람·규칙을 읽기만 하고 저장하지 않는다(빈 알람으로 덮어쓰지 않게). 설정 화면에 경고와 [예시(local.example)로 local 만들기]가 뜬다.
@@ -251,7 +289,7 @@ open app-mac/build/PokeMate.app
 - `local/bundle.json`: `{"bundleId": "…"}` 가 있으면 `bundle.sh` 가 그 번들 ID 로 묶는다(없으면 `Info.plist` 의 `io.pokemate.app`). 이미 쓰던 번들 ID 를 그대로 두면 알림 권한·메뉴바 위치가 유지된다.
 - `local/banned-terms.txt`: push 전에 막을 금지어 한 줄에 하나. `.git/hooks/pre-push` 가 push 되는 커밋의 파일 내용·파일 이름·커밋 메시지를 검사해 하나라도 있으면 파일과 줄 번호를 보여 주고 멈춘다. 지금 올릴 상태를 미리 보려면 `git add -A && .git/hooks/pre-push --check --index`.
 
-저장소를 `~/Workspace/poke-mate-ai-agent` 가 아닌 곳에 두었다면 ⚙︎ 설정의 "메이트 저장소"를 바꾼다.
+저장소를 `~/Workspace/poke-mate-ai-agent`(Windows: `%USERPROFILE%\Workspace\poke-mate-ai-agent`)가 아닌 곳에 두었다면 ⚙︎ 설정의 "메이트 저장소"를 바꾼다.
 
 터미널에서 `uv --directory …` 없이 `pokemate` 로 바로 부르려면 한 번 설치한다. 저장소 코드를 고치면 바로 반영된다(`--editable`).
 
@@ -291,7 +329,18 @@ cd app-mac && ./scripts/pipeline-trial.sh /tmp/pm-trial   # Jira 역할 처리 �
 cd app-mac && ./scripts/review-eval.sh                    # 리뷰 기준 문제 묶음 (local/eval/reviews.json, 쓰기 막고 실제 Claude 실행)
 ```
 
-연결 계정은 macOS 키체인(서비스 이름 `poke-mate`)에 저장한다.
+Windows (PowerShell, 저장소 루트에서):
+
+```powershell
+cd mcp-server; uv run pytest; cd ..                                              # Python 테스트
+dotnet run --project app-win\src\PokeMate.CoreChecks                             # C# 로직 검증 (마지막 줄 failed: 0)
+.\app-win\scripts\bundle.ps1                                                     # 앱 묶기 → app-win\build\PokeMate
+.\app-win\scripts\install.ps1                                                    # %LOCALAPPDATA%\Programs\PokeMate 에 설치
+.\app-win\scripts\pipeline-trial.ps1 -Root $env:TEMP\pm-trial                    # Jira 역할 처리 시험 (가짜 Jira·로컬 원격, 실제 Claude 실행)
+.\app-win\scripts\review-eval.ps1                                                # 리뷰 기준 문제 묶음
+```
+
+연결 계정은 macOS 키체인(Windows: 자격 증명 관리자)에 서비스 이름 `poke-mate` 로 저장한다.
 
 ## 참고한 프로젝트
 
