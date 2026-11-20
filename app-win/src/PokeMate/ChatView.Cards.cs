@@ -546,7 +546,8 @@ public sealed partial class ChatView
 
     // MARK: 승인 카드
 
-    FrameworkElement PermissionCard(PermissionRequest request)
+    /// 승인 카드. 작업 세션 화면의 대화도 같은 카드를 쓰므로 대화를 인자로 받는다.
+    internal static FrameworkElement PermissionCard(ChatSession chat, PermissionRequest request)
     {
         var menu = AllowRules.Menu(request.Tool, request.InputObject, request.Rules, ClaudeCommand.LoadDeny());
         var panel = new StackPanel();
@@ -558,7 +559,7 @@ public sealed partial class ChatView
         if (chat.SessionAllow.Count > 0)
         {
             var allowed = ChatUi.Id(ChatUi.Link($"항상 허용 {chat.SessionAllow.Count}개", () => { }), "PermAllowed");
-            allowed.Click += (_, _) => ShowAllowed(allowed);
+            allowed.Click += (_, _) => ShowAllowed(chat, allowed);
             Grid.SetColumn(allowed, 1);
             head.Children.Add(allowed);
         }
@@ -594,7 +595,7 @@ public sealed partial class ChatView
         buttons.Children.Add(deny);
         var always = ChatUi.Id(Ui.Pill("이 대화에서 항상 허용 ▾", () => { }), "PermAlways");
         always.Margin = new Thickness(0, 0, 8, 4);
-        always.Click += (_, _) => ShowAlwaysMenu(always, menu);
+        always.Click += (_, _) => ShowAlwaysMenu(chat, always, menu);
         buttons.Children.Add(always);
         panel.Children.Add(buttons);
         var note = Ui.Text("10분 안에 답이 없으면 거부", 10, "TextTertiary");
@@ -604,7 +605,7 @@ public sealed partial class ChatView
         return ChatUi.Tint(panel, 0.08, 12, 12, 0.35);
     }
 
-    void ShowAllowed(FrameworkElement anchor)
+    static void ShowAllowed(ChatSession chat, FrameworkElement anchor)
     {
         var menu = ChatUi.NewMenu(anchor);
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
@@ -619,7 +620,7 @@ public sealed partial class ChatView
         menu.IsOpen = true;
     }
 
-    void ShowAlwaysMenu(FrameworkElement anchor, AllowMenu menuData)
+    static void ShowAlwaysMenu(ChatSession chat, FrameworkElement anchor, AllowMenu menuData)
     {
         var menu = ChatUi.NewMenu(anchor);
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;

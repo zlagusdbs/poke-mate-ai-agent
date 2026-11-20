@@ -274,7 +274,7 @@ public sealed partial class ChatView : Grid
         permissionHost.Children.Clear();
         if (chat.PendingPermission is { } request)
         {
-            var card = PermissionCard(request);
+            var card = PermissionCard(chat, request);
             card.Margin = new Thickness(0, 0, 0, 10);
             permissionHost.Children.Add(card);
         }
@@ -565,14 +565,22 @@ public static class NewWorkSessionMenu
     /// WorkspaceRepos.List() 중 아직 세션이 없는 레포를 고르는 메뉴 항목. 고르면 create(repo).
     public static MenuItem Make(string label, Action<string> create, ISet<string>? existing = null)
     {
-        existing ??= ChatSession.WorkHost.ExistingRepos();
         var parent = ChatUi.Item(label, () => { });
+        foreach (var item in Candidates(create, existing)) parent.Items.Add(item);
+        parent.ToolTip = "~/Workspace 아래 레포를 골라 빈 작업 세션을 만들어요";
+        return parent;
+    }
+
+    /// 하위 메뉴의 항목들 (레포마다 하나, 없으면 안내 한 줄). 버튼에서 바로 메뉴를 띄울 때 쓴다.
+    public static List<MenuItem> Candidates(Action<string> create, ISet<string>? existing = null)
+    {
+        existing ??= ChatSession.WorkHost.ExistingRepos();
+        var items = new List<MenuItem>();
         var repos = WorkspaceRepos.List();
         var candidates = repos.Where(r => !existing.Contains(r)).ToList();
         if (candidates.Count == 0)
-            parent.Items.Add(new MenuItem { Header = repos.Count == 0 ? "~/Workspace 아래에서 git 레포를 찾지 못했어요" : "모든 레포에 이미 작업 세션이 있어요", IsEnabled = false });
-        foreach (var repo in candidates) parent.Items.Add(ChatUi.Item(repo, () => create(repo)));
-        parent.ToolTip = "~/Workspace 아래 레포를 골라 빈 작업 세션을 만들어요";
-        return parent;
+            items.Add(new MenuItem { Header = repos.Count == 0 ? "~/Workspace 아래에서 git 레포를 찾지 못했어요" : "모든 레포에 이미 작업 세션이 있어요", IsEnabled = false });
+        foreach (var repo in candidates) items.Add(ChatUi.Item(repo, () => create(repo)));
+        return items;
     }
 }
