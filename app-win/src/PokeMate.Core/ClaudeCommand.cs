@@ -105,14 +105,36 @@ public static class ClaudeCommand
         "runas", "reg add", "reg delete", "reg import", "regedit", "netsh", "bcdedit", "sc", "schtasks", "shutdown",
         "takeown", "icacls", "net user", "net localgroup", "wmic", "diskpart", "format", "cipher",
         "powershell -EncodedCommand", "Set-ExecutionPolicy",
+        // 리뷰 뒤 더함: 인코딩된 명령의 짧은 형식·pwsh, Defender·레지스트리·예약 작업·서비스·계정·방화벽·전원·디스크 암호화·섀도 복사본·이벤트 로그
+        "powershell -enc", "powershell -ec", "powershell -e",
+        "pwsh -EncodedCommand", "pwsh -enc", "pwsh -ec", "pwsh -e",
+        "Set-MpPreference", "Add-MpPreference", "Set-ItemProperty", "New-ItemProperty", "Register-ScheduledTask",
+        "New-Service", "Set-Service", "Start-Process -Verb RunAs", "New-LocalUser", "Add-LocalGroupMember",
+        "New-NetFirewallRule", "Set-NetFirewallRule", "Remove-NetFirewallRule", "Disable-NetFirewallRule", "Set-NetFirewallProfile",
+        "Restart-Computer", "Stop-Computer", "manage-bde", "vssadmin", "wevtutil",
     };
+
+    /// `.exe` 를 붙여 불러도 같은 프로그램이라 같은 규칙을 `.exe` 형식으로도 둔다 (cmdlet 은 해당 없음)
+    static readonly HashSet<string> WindowsExecutables = new()
+    {
+        "runas", "reg", "regedit", "netsh", "bcdedit", "sc", "schtasks", "shutdown", "takeown", "icacls", "net", "wmic", "diskpart",
+        "cipher", "powershell", "pwsh", "manage-bde", "vssadmin", "wevtutil",
+    };
+
+    static IEnumerable<string> WithExe(string command)
+    {
+        yield return command;
+        var space = command.IndexOf(' ');
+        var head = space < 0 ? command : command[..space];
+        if (WindowsExecutables.Contains(head)) yield return head + ".exe" + (space < 0 ? "" : command[space..]);
+    }
 
     /// 기본 deny. 명령 규칙은 `Bash(...)`·`PowerShell(...)` 양쪽에, 보호 파일은 Claude Code 의 Windows 경로 형식(`//c/…`)으로.
     public static List<string> DefaultDeny(string? dataDir = null, string? localDir = null)
     {
         dataDir ??= AppPaths.DataDir;
         localDir ??= AppPaths.LocalDir;
-        var commands = MacCommands.Concat(WindowsCommands).Distinct().ToList();
+        var commands = MacCommands.Concat(WindowsCommands.SelectMany(WithExe)).Distinct().ToList();
         var guarded = new List<string>
         {
             "./.claude/**",
