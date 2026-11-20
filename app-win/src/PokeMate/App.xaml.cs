@@ -77,6 +77,7 @@ public partial class App : Application
 
         try { ClaudeCommand.InstallPermissions(); } catch (Exception ex) { Log($"권한 파일을 쓰지 못했어요: {ex.Message}"); }
 
+        AppModel.MigrateGitHubSeen = TriggerWatcher.MigrateGitHubSeen;   // AppModel 이 알림을 옮기기 전에 연결한다
         model = new AppModel();
         popover = new PopoverWindow(model);
         tray = new TrayIcon(

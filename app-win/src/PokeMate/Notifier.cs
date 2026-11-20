@@ -33,6 +33,9 @@ public static class Notifier
             Debug.WriteLine($"[알림] {title}\n{body}");
             return;
         }
+        // 풍선은 본문이 비면 거부한다
+        if (body.Trim().Length == 0) body = title.Trim().Length == 0 ? "PokeMate" : title;
+        App.Log($"알림: {title} | {body.Replace("\n", " ")}");
         shownTag = tag;
         shownClick = onClick;
         tray.ShowBalloon(title, body);
