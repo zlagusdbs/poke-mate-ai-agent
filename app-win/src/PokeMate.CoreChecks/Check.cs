@@ -21,6 +21,45 @@ public static class Check
         That(ok, name);
     }
 
+    /// 맥 검사의 `Asia/Seoul` 달력.
+    public static readonly TimeZoneInfo Seoul = TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
+
+    public static DateTimeOffset SeoulTime(int year, int month, int day, int hour = 0, int minute = 0) =>
+        new(year, month, day, hour, minute, 0, TimeSpan.FromHours(9));
+
+    /// 앱 데이터 폴더(POKEMATE_DATA_DIR 의 임시 폴더)의 설정에 임시 저장소를 repoDir 로 적는다.
+    /// 규칙·알람·메모처럼 repoDir 아래를 읽고 쓰는 검사가 실제 저장소(`%USERPROFILE%\Workspace\poke-mate-ai-agent`)를 건드리지 않게 한다.
+    public sealed class TempRepo : IDisposable
+    {
+        public string Path { get; }
+        public string Shared => System.IO.Path.Combine(Path, "shared");
+        public string Local => System.IO.Path.Combine(Path, "local");
+
+        readonly string? previous;
+
+        public TempRepo(bool withLocal = true)
+        {
+            try { previous = File.ReadAllText(PokeMate.Core.AppPaths.SettingsFile); } catch { previous = null; }
+            Path = TempDir("pm-repo");
+            Directory.CreateDirectory(Shared);
+            if (withLocal) Directory.CreateDirectory(Local);
+            var settings = PokeMate.Core.AppSettings.Default;
+            settings.RepoDir = Path;
+            if (!PokeMate.Core.AppPaths.SaveSettings(settings)) throw new IOException("설정을 임시 저장소로 바꾸지 못했어요");
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (previous == null) File.Delete(PokeMate.Core.AppPaths.SettingsFile);
+                else File.WriteAllText(PokeMate.Core.AppPaths.SettingsFile, previous);
+            }
+            catch { }
+            Remove(Path);
+        }
+    }
+
     /// 검사용 임시 폴더 (실제 데이터 폴더·홈을 건드리지 않게).
     public static string TempDir(string prefix)
     {

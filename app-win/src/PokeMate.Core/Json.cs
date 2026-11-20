@@ -13,10 +13,13 @@ public static class Json
     /// 문자열 enum, 날짜는 Swift 기본 형식(2001-01-01 기준 초, 실수).
     public static readonly JsonSerializerOptions Options = MakeOptions(indented: true);
 
+    /// 날짜를 `.iso8601` (`2026-11-17T01:00:00Z`) 로 쓰던 파일용 (Swift `dateEncodingStrategy = .iso8601`): 메이트·알람 실행 기록.
+    public static readonly JsonSerializerOptions Iso8601 = MakeOptions(indented: true, iso8601: true);
+
     /// 들여쓰기 없는 한 줄 형식 (Swift 의 기본 JSONEncoder 출력처럼).
     public static readonly JsonSerializerOptions Compact = MakeOptions(indented: false);
 
-    static JsonSerializerOptions MakeOptions(bool indented)
+    static JsonSerializerOptions MakeOptions(bool indented, bool iso8601 = false)
     {
         var o = new JsonSerializerOptions
         {
@@ -28,7 +31,9 @@ public static class Json
             NumberHandling = JsonNumberHandling.Strict,
         };
         o.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));
-        o.Converters.Add(new SwiftDateConverter());
+        if (iso8601) o.Converters.Add(new Iso8601DateConverter());
+        else o.Converters.Add(new SwiftDateConverter());
+        o.Converters.Add(new UuidConverter());
         return o;
     }
 
@@ -45,7 +50,8 @@ public static class Json
     }
 
     /// Swift `.sortedKeys` + `.prettyPrinted` 로 쓰던 파일 형식 (키 정렬, 들여쓰기).
-    public static string SortedPretty<T>(T value) => Sorted(JsonSerializer.SerializeToNode(value, Options))?.ToJsonString(Options) ?? "null";
+    public static string SortedPretty<T>(T value, JsonSerializerOptions? options = null) =>
+        Sorted(JsonSerializer.SerializeToNode(value, options ?? Options))?.ToJsonString(Options) ?? "null";
 
     /// 노드의 객체 키를 재귀로 정렬한 사본 (Swift `.sortedKeys`, 바이트 순서).
     public static JsonNode? Sorted(JsonNode? node)
@@ -85,6 +91,17 @@ public static class Json
 
     public static string ToText(JsonNode? node, bool indented = false) =>
         node?.ToJsonString(indented ? Options : Compact) ?? "null";
+
+    /// `as? Int` 로 읽히는 값: 정수이거나 소수부가 없는 수. 아니면 null (문자열 "10" 도 null).
+    public static int? IntExact(JsonNode? node)
+    {
+        if (node is not JsonValue v) return null;
+        if (v.TryGetValue<JsonElement>(out var e))
+            return e.ValueKind == JsonValueKind.Number && e.TryGetDouble(out var d) && d == Math.Floor(d) && Math.Abs(d) < int.MaxValue ? (int)d : null;
+        if (v.TryGetValue<int>(out var i)) return i;
+        if (v.TryGetValue<long>(out var l) && Math.Abs(l) < int.MaxValue) return (int)l;
+        return null;
+    }
 
     /// `as? String`
     public static string? Str(JsonNode? node) =>
@@ -144,5 +161,35 @@ public static class Json
 
         public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
             writer.WriteNumberValue((value - ReferenceDate).Ticks / (double)TimeSpan.TicksPerSecond);
+    }
+
+    /// Swift `.iso8601`: `2026-11-17T01:00:00Z` (UTC, 소수 초 없음).
+    public sealed class Iso8601DateConverter : JsonConverter<DateTimeOffset>
+    {
+        public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.String
+                && DateTimeOffset.TryParse(reader.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var d)) return d;
+            throw new JsonException("ISO 8601 날짜가 아니에요");
+        }
+
+        public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+    }
+
+    /// Swift `UUID.uuidString`: 대문자 8-4-4-4-12. 읽을 때는 대소문자 모두 받는다.
+    public sealed class UuidConverter : JsonConverter<Guid>
+    {
+        public override Guid Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.TokenType == JsonTokenType.String && Guid.TryParse(reader.GetString(), out var g) ? g : throw new JsonException("UUID 형식이 아니에요");
+
+        public override void Write(Utf8JsonWriter writer, Guid value, JsonSerializerOptions options) => writer.WriteStringValue(Format(value));
+
+        public override Guid ReadAsPropertyName(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            Guid.TryParse(reader.GetString(), out var g) ? g : throw new JsonException("UUID 형식이 아니에요");
+
+        public override void WriteAsPropertyName(Utf8JsonWriter writer, Guid value, JsonSerializerOptions options) => writer.WritePropertyName(Format(value));
+
+        public static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
     }
 }

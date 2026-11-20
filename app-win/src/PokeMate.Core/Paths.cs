@@ -19,6 +19,14 @@ public static class Paths
         return path;
     }
 
+    /// 다른 프로세스(파이썬 서버)가 쓰는 중이어도 읽는다 (쓰기·삭제 공유). 읽을 수 없으면 예외.
+    public static string ReadShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream, new System.Text.UTF8Encoding(false), detectEncodingFromByteOrderMarks: true);
+        return reader.ReadToEnd();
+    }
+
     static readonly Regex Drive = new(@"^([A-Za-z]):[\\/]?(.*)$", RegexOptions.Singleline);
 
     /// Claude Code 권한 규칙(`Edit(...)`)에 쓰는 절대 경로 형식.
@@ -61,6 +69,16 @@ internal static class SwiftText
         var len = info.LengthInTextElements;
         return n >= len ? s : info.SubstringByTextElements(len - Math.Max(0, n));
     }
+
+    /// 글자(문자소) 목록 (Swift `for ch in string`)
+    public static IEnumerable<string> Elements(string s)
+    {
+        var e = StringInfo.GetTextElementEnumerator(s);
+        while (e.MoveNext()) yield return (string)e.Current;
+    }
+
+    /// Swift `.newlines` 다듬기 (U+000A–000D, U+0085, U+2028, U+2029)
+    public static string TrimNewlines(string s) => s.Trim('\n', '\r', '\u000B', '\u000C', '\u0085', '\u2028', '\u2029');
 
     /// Swift `.whitespacesAndNewlines` 다듬기
     public static string Trim(string s) => s.Trim();

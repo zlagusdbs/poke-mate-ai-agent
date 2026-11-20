@@ -7,14 +7,15 @@ namespace PokeMate.Core;
 
 public sealed record TokenBucket
 {
-    public int Input { get; set; }
-    public int Output { get; set; }
-    public int CacheWrite { get; set; }
-    public int CacheRead { get; set; }
+    // 토큰 수는 64비트다 (맥 Swift Int). 캐시 읽기만으로 하루에 수억, 전체 합계는 수십억을 넘는다.
+    public long Input { get; set; }
+    public long Output { get; set; }
+    public long CacheWrite { get; set; }
+    public long CacheRead { get; set; }
 
     public TokenBucket() { }
 
-    public TokenBucket(int input = 0, int output = 0, int cacheWrite = 0, int cacheRead = 0)
+    public TokenBucket(long input = 0, long output = 0, long cacheWrite = 0, long cacheRead = 0)
     {
         Input = input;
         Output = output;
@@ -22,7 +23,7 @@ public sealed record TokenBucket
         CacheRead = cacheRead;
     }
 
-    [JsonIgnore] public int Total => Input + Output + CacheWrite + CacheRead;
+    [JsonIgnore] public long Total => Input + Output + CacheWrite + CacheRead;
 
     public void Add(TokenBucket other)
     {
@@ -80,7 +81,7 @@ public static class ClaudePricing
     }
 }
 
-public sealed record DailyUsage(string Day, int Total, double Cost, IReadOnlyDictionary<string, int> ByModel)
+public sealed record DailyUsage(string Day, long Total, double Cost, IReadOnlyDictionary<string, long> ByModel)
 {
     public string Id => Day;
 
@@ -96,7 +97,7 @@ public sealed class UsageSummary : IEquatable<UsageSummary>
     public TokenBucket Today { get; set; } = new();
     public TokenBucket Week { get; set; } = new();
     public TokenBucket Month { get; set; } = new();
-    public int AllTime { get; set; }
+    public long AllTime { get; set; }
     public double TodayCost { get; set; }
     public double WeekCost { get; set; }
     public double MonthCost { get; set; }
@@ -311,7 +312,7 @@ public sealed class ClaudeUsageReader
             || !DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var date)) return null;
         var model = Json.Str(message["model"]) ?? "unknown";
         if (model == "<synthetic>") return null;
-        int Int(string key) => Json.Int(usage[key]) ?? 0;
+        long Int(string key) => Json.Long(usage[key]) ?? 0;
         var bucket = new TokenBucket(Int("input_tokens"), Int("output_tokens"), Int("cache_creation_input_tokens"), Int("cache_read_input_tokens"));
         if (bucket.Total <= 0) return null;
         string? id = null;
@@ -391,7 +392,7 @@ public sealed class ClaudeUsageReader
 
 public static class TokenFormat
 {
-    public static string Compact(int n)
+    public static string Compact(long n)
     {
         double d = n;
         var inv = CultureInfo.InvariantCulture;
@@ -407,16 +408,16 @@ public static class TokenFormat
 /// `claude -p` 한 번 실행의 사용량 (result 줄). 맥에서는 WorkSessions.swift 에 있다.
 public sealed record RunUsage
 {
-    public int Input { get; set; }
-    public int Output { get; set; }
-    public int CacheRead { get; set; }
-    public int CacheWrite { get; set; }
+    public long Input { get; set; }
+    public long Output { get; set; }
+    public long CacheRead { get; set; }
+    public long CacheWrite { get; set; }
     public double CostUSD { get; set; }
-    public int? ContextWindow { get; set; }
+    public long? ContextWindow { get; set; }
 
     public RunUsage() { }
 
-    public RunUsage(int input = 0, int output = 0, int cacheRead = 0, int cacheWrite = 0, double costUSD = 0, int? contextWindow = null)
+    public RunUsage(long input = 0, long output = 0, long cacheRead = 0, long cacheWrite = 0, double costUSD = 0, long? contextWindow = null)
     {
         Input = input;
         Output = output;
@@ -426,8 +427,8 @@ public sealed record RunUsage
         ContextWindow = contextWindow;
     }
 
-    [JsonIgnore] public int Total => Input + Output + CacheRead + CacheWrite;
-    [JsonIgnore] public int Context => Input + CacheRead + CacheWrite;
+    [JsonIgnore] public long Total => Input + Output + CacheRead + CacheWrite;
+    [JsonIgnore] public long Context => Input + CacheRead + CacheWrite;
 
     public void Add(RunUsage other)
     {
@@ -446,9 +447,9 @@ public sealed record RunUsage
             .FirstOrDefault(o => o != null && Json.Str(o["type"]) == "result");
         if (result == null) return null;
         var usage = result["usage"] as JsonObject ?? new JsonObject();
-        int Int(string key) => Json.Int(usage[key]) ?? 0;
+        long Int(string key) => Json.Long(usage[key]) ?? 0;
         var windows = (result["modelUsage"] as JsonObject ?? new JsonObject())
-            .Select(kv => Json.Int((kv.Value as JsonObject)?["contextWindow"])).Where(w => w != null).Select(w => w!.Value).ToList();
+            .Select(kv => Json.Long((kv.Value as JsonObject)?["contextWindow"])).Where(w => w != null).Select(w => w!.Value).ToList();
         return new RunUsage(Int("input_tokens"), Int("output_tokens"), Int("cache_read_input_tokens"), Int("cache_creation_input_tokens"),
                             Json.Double(result["total_cost_usd"]) ?? 0, windows.Count == 0 ? null : windows.Max());
     }
