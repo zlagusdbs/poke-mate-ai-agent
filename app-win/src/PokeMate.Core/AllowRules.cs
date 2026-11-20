@@ -135,6 +135,8 @@ public static class ShellPrograms
 
 public static class AllowRules
 {
+    public const string PowerShellUnavailable = "PowerShell 명령은 항상 허용할 수 없어요. 한 번만 허용해 주세요.";
+
     public static string Rule(string program) => $"Bash({(program == "sed -i" ? "sed" : program)}:*)";
 
     internal static bool Denied(string program, IEnumerable<string> deny)
@@ -174,6 +176,13 @@ public static class AllowRules
                     options.Add(new AllowOption(program, new[] { Rule(program) }, ShellPrograms.IsRisky(program)));
                 }
                 break;
+            }
+            case "PowerShell":
+            {
+                // 맥의 Bash 처럼 프로그램별로 나눠 막은 목록과 맞춰 볼 수 없어서(파이프·스크립트 블록·별칭), 한 번 허용만 쓴다.
+                // Claude Code 제안에 PowerShell 전체를 여는 규칙이 섞여 있으면 그 제안도 빼서, 한 번 눌러 모든 PowerShell 을 열 수 없게 한다.
+                var whole = suggested.Any(r => AllowRules.Split(r) is var (t, c) && t == "PowerShell" && (c == null || c.Replace(":", "").Replace("*", "").Trim().Length == 0));
+                return new AllowMenu(whole ? new List<AllowOption>() : options, PowerShellUnavailable);
             }
             case "WebFetch":
                 if (Json.Str(input["url"]) is string url && Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Host.Length > 0)
