@@ -39,7 +39,7 @@ VERIFIERS: dict[str, Verifier] = {
     "jira": lambda system, cred: JiraClient(system.base_url or "", cred).verify(),
     "wiki": lambda system, cred: WikiClient(system.base_url or "", cred).verify(),
     "hr": lambda system, cred: HrClient(system.base_url or "", cred).verify(),
-    "deploy": lambda system, cred: DeployClient(system.base_url or "", cred, login_url=system.web_url or "").verify(),
+    "deploy": lambda system, cred: DeployClient(system.base_url or "", cred).verify(),
     "approval": lambda system, cred: ApprovalClient(system.base_url or "", cred, system.login_domain or "").verify(),
     "permit": lambda system, cred: PermitClient(system.base_url or "", cred, home=system.home).verify(),
     "portal": lambda system, cred: PortalClient(system.base_url or "", cred).verify(),

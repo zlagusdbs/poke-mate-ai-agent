@@ -286,7 +286,6 @@ cd mcp-server; uv sync; uv run pytest; cd ..
 - 저장소에 올라가는 코드·테스트·예시에는 일반 이름(hr, deploy, approval, permit, portal, groupware)과 example 값만 둔다. 회사 고유 값은 `local/` 에만 둔다.
 
 - `local/connections.json`: 실제 주소와 화면·대화에서 부르는 이름. 항목마다 `name`(연결 화면과 알람에 보이는 이름)과 `aliases`(대화에서 부르는 다른 이름)를 둘 수 있고, 앱이 시스템 안내에 "이 이름으로 부르면 이 연결의 도구를 쓴다"를 덧붙인다. `home` 은 로그인 확인에 여는 첫 화면 경로(permit), 설정 항목의 `worklogCalendarTitle`·`worklogAliases` 는 worklog 캘린더를 부르는 이름이다.
-- 배포(`deploy`) 연결은 `webUrl`(사람이 여는 배포 화면)에 사내 계정으로 한 번 로그인해 받은 쿠키로 `baseUrl` 의 API 를 부른다. 배포 API 는 Basic 요청마다 LDAP 인증과 GitHub 토큰 발급을 해서 무겁고 GitHub 이 멈추면 같이 실패하기 때문이다. `webUrl` 이 없으면 예전처럼 Basic 인증을 쓴다.
 - `local/bundle.json`: `{"bundleId": "…"}` 가 있으면 `bundle.sh` 가 그 번들 ID 로 묶는다(없으면 `Info.plist` 의 `io.pokemate.app`). 이미 쓰던 번들 ID 를 그대로 두면 알림 권한·메뉴바 위치가 유지된다.
 - `local/banned-terms.txt`: push 전에 막을 금지어 한 줄에 하나. `.git/hooks/pre-push` 가 push 되는 커밋의 파일 내용·파일 이름·커밋 메시지를 검사해 하나라도 있으면 파일과 줄 번호를 보여 주고 멈춘다. 지금 올릴 상태를 미리 보려면 `git add -A && .git/hooks/pre-push --check --index`.
 
