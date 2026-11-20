@@ -110,13 +110,13 @@ def _deploy_web(system: SystemDef) -> str:
 def _deploy_approval_requested() -> list[EventItem]:
     system, cred = _system("deploy")
     return [EventItem(str(r["id"]), f"배포 승인 요청 · {r['id']}", f"{r['summary']} · {r['creatingUser']}", _deploy_web(system))
-            for r in DeployClient(system.base_url, cred, login_url=system.web_url or "").approvals()]
+            for r in DeployClient(system.base_url, cred).approvals()]
 
 
 def _deploy_my_release_status() -> list[EventItem]:
     system, cred = _system("deploy")
     return [EventItem(f"{r['id']}:{r['status']}", f"내 배포 {r['id']} · {r['status']}", r["summary"], _deploy_web(system))
-            for r in DeployClient(system.base_url, cred, login_url=system.web_url or "").my_releases()]
+            for r in DeployClient(system.base_url, cred).my_releases()]
 
 
 # --- Jira -------------------------------------------------------------------

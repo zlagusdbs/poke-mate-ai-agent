@@ -23,12 +23,6 @@ mcp = MCPServer(
 )
 
 
-def _deploy(base_url: str, cred: Credential) -> DeployClient:
-    """배포 API 클라이언트. 연결 설정의 화면 주소(webUrl)가 있으면 그 화면에 로그인해 받은 쿠키로 부른다."""
-    system = find_system("deploy")
-    return DeployClient(base_url, cred, login_url=(system.web_url if system else None) or "")
-
-
 def _with_system(system_id: str, work: Callable[[str, Credential], Any]) -> Any:
     """연결 확인 → 작업 실행. 오류는 {"error": 코드} 로 돌려주고, 로그인 실패면 만료로 표시한다."""
     try:
@@ -194,22 +188,22 @@ def hr_flexwork_week(date: str = "") -> dict:
 
 def deploy_my_releases() -> dict:
     """내가 만든 Deploy 배포 목록 (상태·요약·생성일)."""
-    return _with_system("deploy", lambda base_url, cred: {"releases": _deploy(base_url, cred).my_releases()})
+    return _with_system("deploy", lambda base_url, cred: {"releases": DeployClient(base_url, cred).my_releases()})
 
 
 def deploy_approvals() -> dict:
     """내가 승인해야 할 Deploy 배포 목록."""
-    return _with_system("deploy", lambda base_url, cred: {"releases": _deploy(base_url, cred).approvals()})
+    return _with_system("deploy", lambda base_url, cred: {"releases": DeployClient(base_url, cred).approvals()})
 
 
 def deploy_domain_releases(domain: str, status: str = "", limit: int = 20) -> dict:
     """Deploy 도메인(배포 대상, 예: nova-front)의 최근 배포. status: Open|Approved|Launching|Closed (비우면 전체)."""
-    return _with_system("deploy", lambda base_url, cred: {"releases": _deploy(base_url, cred).domain_releases(domain, status, limit)})
+    return _with_system("deploy", lambda base_url, cred: {"releases": DeployClient(base_url, cred).domain_releases(domain, status, limit)})
 
 
 def deploy_release_search(start_date: str, end_date: str) -> dict:
     """기간(yyyy-MM-dd ~ yyyy-MM-dd)의 전체 Deploy 배포 검색."""
-    return _with_system("deploy", lambda base_url, cred: {"releases": _deploy(base_url, cred).search(start_date, end_date)})
+    return _with_system("deploy", lambda base_url, cred: {"releases": DeployClient(base_url, cred).search(start_date, end_date)})
 
 
 def github_review_requests() -> dict:

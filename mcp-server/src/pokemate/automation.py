@@ -796,7 +796,7 @@ def deploy():
     cred = credentials.load("deploy")
     if system is None or not system.enabled or not system.base_url or cred is None:
         raise SystemExit("배포 시스템이 연결돼 있지 않아요. PokeMate 연결 메뉴에서 연결해 주세요")
-    return system, cred, DeployClient(system.base_url, cred, login_url=system.web_url or "")
+    return system, cred, DeployClient(system.base_url, cred)
 
 
 def cmd_deploy_approve(args):
