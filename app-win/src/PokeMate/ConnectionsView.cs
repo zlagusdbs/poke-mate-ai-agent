@@ -220,7 +220,7 @@ sealed class LoginDialog
         var secret = "";
         var working = false;
         Button connect = null!;
-        var (userFrame, _) = EditorStyle.TextField("", t => { username = t; Update(); }, "아이디", id: "LoginUser");
+        var (userFrame, userBox) = EditorStyle.TextField("", t => { username = t; Update(); }, "아이디", id: "LoginUser");
         body.Children.Add(userFrame);
         var (passFrame, passBox) = EditorStyle.PasswordField(t => { secret = t; Update(); }, "LoginSecret", "비밀번호");
         passFrame.Margin = new Thickness(0, 8, 0, 0);
@@ -252,6 +252,8 @@ sealed class LoginDialog
         buttons.Children.Add(cancel);
         buttons.Children.Add(connect);
         body.Children.Add(buttons);
+        EditorStyle.ButtonKeys(window, new[] { cancel, connect }, 1);
+        window.Loaded += (_, _) => userBox.Focus();
         void Update() => connect.IsEnabled = username.Length > 0 && secret.Length > 0 && !working;
     }
 

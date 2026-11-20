@@ -269,6 +269,43 @@ public static class EditorStyle
         return window;
     }
 
+    /// 대화 창 아래 버튼 줄의 키보드 동작. 고른 버튼 하나만 파란색(PrimaryButton)으로 보이고,
+    /// ← → 로 고른 버튼을 바꾸며, Enter 는 고른 버튼을 누른다. 처음에는 `selected` 번째가 골라져 있다.
+    /// 아이디처럼 글자를 고치는 칸(TextBox)에서는 ← → 가 글자 사이를 옮기고, Enter 만 버튼을 누른다.
+    public static void ButtonKeys(Window window, IReadOnlyList<Button> buttons, int selected)
+    {
+        // Pill 버튼은 안쪽 여백을 직접 0 으로 두므로, 파란 버튼일 때는 그 값을 지우고 돌아올 때 되돌린다.
+        var padding = buttons.Select(b => b.ReadLocalValue(Control.PaddingProperty)).ToArray();
+        void Paint()
+        {
+            for (var i = 0; i < buttons.Count; i++)
+            {
+                var primary = i == selected;
+                buttons[i].SetResourceReference(FrameworkElement.StyleProperty, primary ? "PrimaryButton" : "PillButton");
+                if (primary || padding[i] == DependencyProperty.UnsetValue) buttons[i].ClearValue(Control.PaddingProperty);
+                else buttons[i].Padding = (Thickness)padding[i];
+            }
+        }
+        Paint();
+        window.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Handled) return;
+            var inTextBox = System.Windows.Input.Keyboard.FocusedElement is TextBox;
+            switch (e.Key)
+            {
+                case System.Windows.Input.Key.Left when !inTextBox && selected > 0:
+                    selected--; Paint(); e.Handled = true; break;
+                case System.Windows.Input.Key.Right when !inTextBox && selected < buttons.Count - 1:
+                    selected++; Paint(); e.Handled = true; break;
+                case System.Windows.Input.Key.Enter when System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None:
+                    e.Handled = true;
+                    var button = buttons[selected];
+                    if (button.IsEnabled) button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent, button));
+                    break;
+            }
+        };
+    }
+
     /// 모달로 보이고 끝나면 결과를 돌려준다. 보이는 동안 메이트 창이 닫히지 않게 붙잡는다.
     public static bool? ShowModal(Window window)
     {
@@ -297,6 +334,7 @@ public static class EditorStyle
         buttons.Children.Add(cancelButton);
         buttons.Children.Add(okButton);
         body.Children.Add(buttons);
+        ButtonKeys(window, new[] { cancelButton, okButton }, 1);
         return ShowModal(window) == true;
     }
 
@@ -312,6 +350,7 @@ public static class EditorStyle
         var ok = ChatUi.Primary("확인", () => window.DialogResult = true);
         ok.HorizontalAlignment = HorizontalAlignment.Right;
         body.Children.Add(ok);
+        ButtonKeys(window, new[] { ok }, 0);
         ShowModal(window);
     }
 }
