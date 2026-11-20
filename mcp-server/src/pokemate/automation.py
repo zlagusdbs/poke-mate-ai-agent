@@ -522,7 +522,8 @@ def _shell_command(command: str) -> list[str]:
     """테스트 명령을 돌릴 셸 argv. macOS 는 zsh, Windows 는 Git Bash 가 있으면 bash, 없으면 cmd."""
     if sys.platform == "win32":
         bash = shutil.which("bash")
-        if bash and "system32" not in bash.lower():
+        # System32 와 WindowsApps 의 bash.exe 는 WSL 실행기라 Git Bash 가 아니다
+        if bash and "system32" not in bash.lower() and "windowsapps" not in bash.lower():
             return [bash, "-lc", command]
         return ["cmd", "/c", command]
     return ["/bin/zsh", "-lc", command]

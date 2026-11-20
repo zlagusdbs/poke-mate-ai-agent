@@ -24,6 +24,10 @@ public static class NotesChecks
         Check.That(Notes.List().Select(n => n.Url).Contains(url), "notes: 목록");
         Notes.Save(url, "# 바꿈\n\n- 둘째");
         Check.That(Notes.Load(url)?.Title == "바꿈" && Notes.Load(url)?.Preview == "- 둘째", "notes: 저장");
+        var savedBytes = File.ReadAllBytes(url);
+        Check.That(!(savedBytes.Length >= 3 && savedBytes[0] == 0xEF && savedBytes[1] == 0xBB && savedBytes[2] == 0xBF)
+                   && !Directory.GetFiles(Notes.Dir).Any(f => Path.GetFileName(f).Contains(".tmp-", StringComparison.Ordinal)),
+                   "notes: 원자적으로 저장 (임시 파일 남지 않음, BOM 없음)");
         Notes.Delete(url);
         Check.That(!File.Exists(url), "notes: 삭제");
         Check.That(Notes.Load(url) == null, "notes: 없는 메모는 읽지 못함");

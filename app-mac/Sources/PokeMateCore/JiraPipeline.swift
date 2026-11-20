@@ -182,8 +182,7 @@ public struct PipelineState: Codable, Equatable, Sendable {
 
         public init(role: String, sessionId: String, startedAt: Date) {
             self.role = role
-            self.policy = policy
-        self.sessionChosen = sessionChosen
+            self.sessionId = sessionId
             self.startedAt = startedAt
         }
     }
@@ -492,9 +491,10 @@ public struct PipelineIO: Sendable {
         self.notice = notice
         self.helper = helper
         self.diff = diff
-        self.sessionId = sessionId
         self.recordSession = recordSession
         self.save = save
+        self.policy = policy
+        self.sessionChosen = sessionChosen
     }
 }
 

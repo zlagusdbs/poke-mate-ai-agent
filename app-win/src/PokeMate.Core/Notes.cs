@@ -15,8 +15,6 @@ public static class Notes
 {
     public static string Dir => Path.Combine(AppPaths.DataDir, "notes");
 
-    static readonly UTF8Encoding Utf8 = new(false);
-
     /// 최근 수정 순
     public static List<Note> List()
     {
@@ -63,7 +61,7 @@ public static class Notes
         }
         var heading = cleaned.Length == 0 ? "# 새 메모" : $"# {cleaned}";
         var text = body.Trim();
-        System.IO.File.WriteAllText(url, heading + "\n\n" + text + (text.Length == 0 ? "" : "\n"), Utf8);
+        AppPaths.WriteAtomic(url, heading + "\n\n" + text + (text.Length == 0 ? "" : "\n"));
         return url;
     }
 
@@ -86,7 +84,7 @@ public static class Notes
         try { return System.IO.File.ReadAllText(url); } catch { return ""; }
     }
 
-    public static void Save(string url, string text) => System.IO.File.WriteAllText(url, text, Utf8);
+    public static void Save(string url, string text) => AppPaths.WriteAtomic(url, text);
 
     /// 휴지통이 아니라 바로 지운다 (맥 `removeItem` 과 같음)
     public static void Delete(string url) => System.IO.File.Delete(url);

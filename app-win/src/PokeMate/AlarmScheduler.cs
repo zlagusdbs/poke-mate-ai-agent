@@ -109,9 +109,9 @@ public sealed class AlarmScheduler : IAppService
                     model.MarkDone(alarm.Id, "끝났어요. 결과는 알림 창과 채팅에 있어요", usage: usage);
                     break;
                 case ClaudeResponse.Failure failure:
-                    if (alarm.ToMac) Notifier.Show($"🔔 {alarm.Title} 실패", failure.Reason.Message);
-                    if (alarm.ToPanel) reminders?.Add(alarm.Title, failure.Reason.Message, true);
-                    model.MarkDone(alarm.Id, failure.Reason.Message, failed: true, usage: usage);
+                    if (alarm.ToMac) Notifier.Show($"🔔 {alarm.Title} 실패", failure.Reason.BackgroundMessage);
+                    if (alarm.ToPanel) reminders?.Add(alarm.Title, failure.Reason.BackgroundMessage, true);
+                    model.MarkDone(alarm.Id, failure.Reason.BackgroundMessage, failed: true, usage: usage);
                     break;
             }
         });

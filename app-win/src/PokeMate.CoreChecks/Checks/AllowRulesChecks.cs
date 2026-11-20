@@ -41,5 +41,26 @@ public static class AllowRulesChecks
         Check.That(Json.Str(perms?["destination"]) == "session" && rules?.Count == 2 && Json.Str(rules[0]?["ruleContent"]) == "find:*" && Json.Str(rules[0]?["toolName"]) == "Bash",
                    "allow: 고른 규칙을 이번 실행(session) 규칙으로 보냄");
         Check.That(new PermissionDecision.AllowRules(new[] { "a" }) == new PermissionDecision.AllowRules(new List<string> { "a" }), "allow: 결정 비교는 내용으로");
+
+        // PowerShell: 맥 Bash 보다 약해지지 않게 "PowerShell 전체" 같은 항상 허용은 없다
+        var ps = AllowRules.Menu("PowerShell", new JsonObject { ["command"] = "Get-ChildItem C:/ | Remove-Item -Recurse" }, Array.Empty<string>(), deny);
+        Check.That(ps.Options.Count == 0 && ps.Unavailable == AllowRules.PowerShellUnavailable && !ps.Options.Any(o => o.Rules.Contains("PowerShell")),
+                   "allow: PowerShell 은 항상 허용 메뉴 없이 한 번 허용만");
+        var psSuggested = AllowRules.Menu("PowerShell", new JsonObject { ["command"] = "Get-Date" }, new[] { "PowerShell(Get-Date:*)" }, deny);
+        Check.That(psSuggested.Options.Count == 1 && psSuggested.Options[0].Rules.SequenceEqual(new[] { "PowerShell(Get-Date:*)" }) && psSuggested.Unavailable != null,
+                   "allow: PowerShell 은 Claude Code 의 좁은 제안만 그대로");
+        var psWhole = new[] { new[] { "PowerShell" }, new[] { "PowerShell(*)" }, new[] { "PowerShell(:*)" }, new[] { "PowerShell(Get-Date:*)", "PowerShell" } }
+            .Select(s => AllowRules.Menu("PowerShell", new JsonObject { ["command"] = "Get-Date" }, s, deny)).ToList();
+        Check.That(psWhole.All(m => m.Options.Count == 0 && m.Unavailable != null), "allow: PowerShell 전체를 여는 제안은 빼고 보여 주지 않음");
+        Check.That(AllowRules.Menu("Bash", new JsonObject { ["command"] = "ls" }, Array.Empty<string>(), deny).Options.All(o => !o.Rules.Contains("Bash")),
+                   "allow: Bash 도 도구 전체 규칙은 만들지 않음");
+        var longCommand = "Get-ChildItem -Recurse -Path C:/work | Where-Object { $_.Length -gt 100 } | ForEach-Object { $_.FullName } " + new string('x', 300) + " ; Remove-Item C:/secret";
+        var psReq = ClaudeStream.PermissionRequest(new JsonObject
+        {
+            ["type"] = "control_request", ["request_id"] = "r10",
+            ["request"] = new JsonObject { ["subtype"] = "can_use_tool", ["tool_name"] = "PowerShell", ["input"] = new JsonObject { ["command"] = longCommand, ["description"] = "파일 찾기" } },
+        })!;
+        Check.That(psReq.Detail.Contains(longCommand) && psReq.Detail.EndsWith("파일 찾기") && psReq.Detail.Contains("Remove-Item C:/secret"),
+                   "allow: PowerShell 승인 카드는 명령 전체를 자르지 않고 보여 줌");
     }
 }

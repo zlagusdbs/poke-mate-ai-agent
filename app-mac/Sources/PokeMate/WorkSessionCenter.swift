@@ -350,7 +350,7 @@ extension WorkSessionCenter {
             enqueuePipeline(state, chat: chat) { response, _ in
                 switch response {
                 case .success(let text, _): notify("Jira 역할 처리 이어서 끝남 · \(state.key)", text, false)
-                case .failure(let failure): notify("Jira 역할 처리 멈춤 · \(state.key)", failure.message, true)
+                case .failure(let failure): notify("Jira 역할 처리 멈춤 · \(state.key)", failure.backgroundMessage, true)
                 }
             }
         }
@@ -444,7 +444,7 @@ extension WorkSessionCenter {
         if quitting { return PipelineRoleResult(usage: usage, interrupted: true) }
         switch response {
         case .success(let text, let id): return PipelineRoleResult(text: text, sessionId: id.isEmpty ? nil : id, usage: usage)
-        case .failure(let failure): return PipelineRoleResult(sessionId: nil, usage: usage, failure: failure.message)
+        case .failure(let failure): return PipelineRoleResult(sessionId: nil, usage: usage, failure: failure.backgroundMessage)
         }
     }
 

@@ -222,7 +222,7 @@ public sealed class ChatSession : NotifyObject
                     switch (response)
                     {
                         case ClaudeResponse.Success success: Append(new ChatMessage(ChatMessage.RoleKind.Assistant, success.Text)); break;
-                        case ClaudeResponse.Failure failure: Append(new ChatMessage(ChatMessage.RoleKind.Error, failure.Reason.Message)); break;
+                        case ClaudeResponse.Failure failure: Append(new ChatMessage(ChatMessage.RoleKind.Error, failure.Reason.BackgroundMessage)); break;
                     }
                 }
                 automationRunners.Remove(automation);
@@ -373,7 +373,7 @@ public sealed class ChatSession : NotifyObject
                 {
                     Append(new ChatMessage(ChatMessage.RoleKind.User, $"🔔 {report.Title}"));
                     var response = await runner.Run(report.Prompt, null, settings());
-                    Handle(response, null, Array.Empty<ImageAttachment>());
+                    Handle(response, null, Array.Empty<ImageAttachment>(), interactive: false);
                     report.Completion(response, runner.LastUsage);
                     break;
                 }
@@ -407,7 +407,8 @@ public sealed class ChatSession : NotifyObject
         });
     }
 
-    void Handle(ClaudeResponse response, string? prompt, IReadOnlyList<ImageAttachment> images, string? repo = null)
+    /// `interactive` 는 사용자가 보낸 채팅·작업 세션 질문일 때만 true. 알림 실행은 로그인을 시작하지 않고 로그인이 필요하다고만 남긴다.
+    void Handle(ClaudeResponse response, string? prompt, IReadOnlyList<ImageAttachment> images, string? repo = null, bool interactive = true)
     {
         lastFailedRepo = repo;
         switch (response)
@@ -430,9 +431,10 @@ public sealed class ChatSession : NotifyObject
             }
             case ClaudeResponse.Failure failure:
             {
-                Append(new ChatMessage(ChatMessage.RoleKind.Error, failure.Reason.Message) { Session = repo });
+                Append(new ChatMessage(ChatMessage.RoleKind.Error, interactive ? failure.Reason.Message : failure.Reason.BackgroundMessage) { Session = repo });
                 lastFailedImages = images;
-                if (failure.Reason is ClaudeFailure.NotLoggedIn) StartLogin(prompt);
+                if (ClaudeFailure.StartsLogin(failure.Reason, interactive)) StartLogin(prompt);
+                else if (failure.Reason is ClaudeFailure.NotLoggedIn) { }   // 알림 실행: 로그인은 사용자가 채팅이나 설정에서 시작한다
                 else if (failure.Reason is not (ClaudeFailure.Cancelled or ClaudeFailure.UsageLimit))   // 한도는 다시 시도해도 같아서 버튼을 숨긴다
                     LastFailedPrompt = prompt;
                 break;

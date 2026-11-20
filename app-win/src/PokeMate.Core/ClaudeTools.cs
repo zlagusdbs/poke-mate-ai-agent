@@ -110,6 +110,13 @@ public static class ClaudeStream
                 return $"{LineCount(content)}줄을 씀\n{Short(content, 200)}";
             case "Bash":
                 return Text(input, "description");
+            case "PowerShell":
+            {
+                // 요약(Target)은 120자에서 자르므로, 승인 카드에서 명령 전체를 볼 수 있게 자르지 않고 보여 준다.
+                var command = Text(input, "command");
+                var description = Text(input, "description");
+                return description.Length == 0 ? command : command.Length == 0 ? description : command + "\n— " + description;
+            }
             default:
                 return Short(Json.Sorted(input)?.ToJsonString(Json.Compact) ?? "", 240);
         }

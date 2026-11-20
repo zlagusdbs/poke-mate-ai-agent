@@ -13,8 +13,9 @@ namespace PokeMate;
 /// 모든 멤버는 UI 스레드에서 부른다. 바뀌면 PropertyChanged(Book·Running·Queued·Pipelines·Reviewing·MonthUsage·PendingSummary·RequestReset) 가 불리고,
 /// 세션 목록이 바뀌면 `Changed` 도 불린다.
 ///
-/// 세션을 이어 쓸지 새로 시작할지 고르는 곳은 한 군데 `ReuseSession(key)` 다. 레포 세션(`Process`), 역할 세션(`PipelineIO.SessionId`),
-/// 리뷰어 세션(`ProcessReview`)이 모두 여기를 지난다.
+/// 레포 세션(`Process`)과 리뷰어 세션(`ProcessReview`)은 `ReuseSession(key)` 로 이어 쓸지 새로 시작할지 고른다.
+/// Jira 역할 세션은 티켓마다 따로다: `JiraPipeline` 이 티켓 진행 파일의 `sessions` 와 `PipelineIO.Policy` 로 고르고,
+/// 고른 결과를 `PipelineIO.SessionChosen` 으로 알려 작업 탭 기록(`{도메인}:{역할}`)을 맞춘다 (`ChooseRoleSession`).
 public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
 {
     /// 하나뿐인 센터 (맥 shared). 처음 부를 때 만든다. 앱 시작 때는 WorkSessionService 가 Start 를 부른다.
@@ -567,7 +568,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
                 switch (response)
                 {
                     case ClaudeResponse.Success success: notify($"Jira 역할 처리 이어서 끝남 · {state.Key}", success.Text, false); break;
-                    case ClaudeResponse.Failure failure: notify($"Jira 역할 처리 멈춤 · {state.Key}", failure.Reason.Message, true); break;
+                    case ClaudeResponse.Failure failure: notify($"Jira 역할 처리 멈춤 · {state.Key}", failure.Reason.BackgroundMessage, true); break;
                 }
             });
         }
@@ -669,7 +670,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         return response switch
         {
             ClaudeResponse.Success success => new PipelineRoleResult(Text: success.Text, SessionId: success.SessionId.Length == 0 ? null : success.SessionId, Usage: usage),
-            ClaudeResponse.Failure failure => new PipelineRoleResult(SessionId: null, Usage: usage, Failure: failure.Reason.Message),
+            ClaudeResponse.Failure failure => new PipelineRoleResult(SessionId: null, Usage: usage, Failure: failure.Reason.BackgroundMessage),
             _ => new PipelineRoleResult(Usage: usage, Failure: "알 수 없는 응답"),
         };
     }
@@ -797,11 +798,14 @@ public sealed class WorkSessionService : IAppService
     public void Start(AppModel model)
     {
         WorkSessionCenter.Shared.Start(model);
+#if DEBUG
         WorkSessionTestHook.Start(WorkSessionCenter.Shared, model);
+#endif
     }
 }
 
-/// 시험용 입구: 환경 변수 POKEMATE_TEST_EVENTS 가 폴더를 가리킬 때만 켜진다. 그 폴더에 `이름.event.json` 을 놓으면
+#if DEBUG
+/// 시험용 입구 (Debug 빌드에만 들어간다): 환경 변수 POKEMATE_TEST_EVENTS 가 폴더를 가리킬 때만 켜진다. 그 폴더에 `이름.event.json` 을 놓으면
 /// 트리거 알림이 새 이벤트를 알린 것처럼 작업 세션 처리를 시작하고, 끝나면 `이름.result.json` 을 남긴다 (실제 Jira·GitHub 없이 흐름을 확인하려고).
 ///   {"mode": "work|pipeline|review", "key": "ACME-201", "title": "…", "summary": "…", "url": "…", "prompt": "…", "timeoutMinutes": 5}
 static class WorkSessionTestHook
@@ -861,3 +865,4 @@ static class WorkSessionTestHook
         }
     }
 }
+#endif

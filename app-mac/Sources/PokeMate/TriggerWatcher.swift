@@ -75,7 +75,7 @@ final class TriggerWatcher {
             case .success:
                 model.recordRun(alarm.id, "끝났어요", failed: false, usage: usage, count: false)
             case .failure(let failure):
-                model.recordRun(alarm.id, failure.message, failed: true, usage: usage, count: false)
+                model.recordRun(alarm.id, failure.backgroundMessage, failed: true, usage: usage, count: false)
             }
             switch response {
             case .success(let text, _):
@@ -83,7 +83,7 @@ final class TriggerWatcher {
                 if alarm.toPanel { reminders.add(title: item.title, text: text, failed: false, url: item.url.isEmpty ? nil : item.url) }
             case .failure(let failure):
                 if alarm.toMac { notifier.send(title: "🔔 \(item.title)", body: item.summary) }
-                if alarm.toPanel { reminders.add(title: item.title, text: failure.message, failed: true, url: item.url.isEmpty ? nil : item.url) }
+                if alarm.toPanel { reminders.add(title: item.title, text: failure.backgroundMessage, failed: true, url: item.url.isEmpty ? nil : item.url) }
             }
         }
         let title = "\(alarm.title) · \(item.title)"

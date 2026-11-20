@@ -172,7 +172,24 @@ public partial class App : Application
             {
                 popover?.Hold();
                 var text = string.Join("\n", active) + "\n\n지금 끄면 다음에 켤 때 끊긴 단계부터 이어서 해요.";
-                var answer = MessageBox.Show(text, "처리 중인 티켓이 있어요", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                // 주인 창을 정해 띄운다: 팝오버가 보이면 팝오버, 아니면 화면 가운데의 보이지 않는 창 (주인 없는 상자는 다른 앱 뒤로 숨거나 포커스를 빼앗는다)
+                Window? hiddenOwner = null;
+                Window owner;
+                if (popover is { IsVisible: true }) owner = popover;
+                else
+                {
+                    hiddenOwner = new Window
+                    {
+                        Width = 1, Height = 1, WindowStyle = WindowStyle.None, AllowsTransparency = true, Opacity = 0,
+                        ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.CenterScreen, Title = "PokeMate",
+                    };
+                    hiddenOwner.Show();
+                    hiddenOwner.Activate();
+                    owner = hiddenOwner;
+                }
+                MessageBoxResult answer;
+                try { answer = MessageBox.Show(owner, text, "처리 중인 티켓이 있어요", MessageBoxButton.OKCancel, MessageBoxImage.Warning); }
+                finally { hiddenOwner?.Close(); }
                 popover?.Release();
                 if (answer != MessageBoxResult.OK) return;
             }

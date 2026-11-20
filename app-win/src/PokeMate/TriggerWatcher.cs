@@ -109,7 +109,7 @@ public sealed class TriggerWatcher : IAppService
                     model.RecordRun(alarm.Id, "끝났어요", false, usage: usage, count: false);
                     break;
                 case ClaudeResponse.Failure failure:
-                    model.RecordRun(alarm.Id, failure.Reason.Message, true, usage: usage, count: false);
+                    model.RecordRun(alarm.Id, failure.Reason.BackgroundMessage, true, usage: usage, count: false);
                     break;
             }
             switch (response)
@@ -120,7 +120,7 @@ public sealed class TriggerWatcher : IAppService
                     break;
                 case ClaudeResponse.Failure failure:
                     if (alarm.ToMac) Notifier.Show($"🔔 {item.Title}", Nonempty(item.Summary));
-                    if (alarm.ToPanel) reminders?.Add(item.Title, failure.Reason.Message, true, url);
+                    if (alarm.ToPanel) reminders?.Add(item.Title, failure.Reason.BackgroundMessage, true, url);
                     break;
             }
         }

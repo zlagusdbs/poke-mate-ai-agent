@@ -775,3 +775,11 @@ def test_shell_command_windows_falls_back_to_cmd(monkeypatch):
     assert automation._shell_command("echo hi") == ["cmd", "/c", "echo hi"]
     monkeypatch.setattr(automation.shutil, "which", lambda name: None)
     assert automation._shell_command("echo hi") == ["cmd", "/c", "echo hi"]
+
+
+def test_shell_command_windows_skips_windowsapps_wsl(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(automation.shutil, "which", lambda name: r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\bash.exe")
+    assert automation._shell_command("echo hi") == ["cmd", "/c", "echo hi"]
+    monkeypatch.setattr(automation.shutil, "which", lambda name: r"C:\Users\u\AppData\Local\Microsoft\WINDOWSAPPS\bash.exe")
+    assert automation._shell_command("echo hi") == ["cmd", "/c", "echo hi"]
