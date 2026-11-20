@@ -11,11 +11,13 @@ public abstract record AlarmRunState
 
 /// 앱 전체 상태 (싱글 인스턴스: AppModel.Shared). 맥 AppModel 과 같은 이름의 공개 속성·메서드.
 /// 모든 속성은 UI 스레드에서 바꾸고, 바뀌면 PropertyChanged(속성 이름) 가 불린다.
-/// 맥의 `chat` 은 Task 6 이 더한다 (ChatSession). 대화 설정에 포켓몬 이름을 넣는 ChatSettings() 는 여기 있다.
 public sealed class AppModel : NotifyObject
 {
     public static AppModel Shared => shared ?? throw new InvalidOperationException("AppModel 은 App 이 시작할 때 만든다");
     static AppModel? shared;
+
+    /// 홈 탭의 대화 (맥 AppModel.chat). 대화 설정에는 ChatSettings() 를 쓴다.
+    public ChatSession Chat { get; }
 
     SidebarItem selected;
     Uri? openNote;
@@ -34,6 +36,7 @@ public sealed class AppModel : NotifyObject
         shared = this;
         var loaded = AppPaths.LoadSettings();
         settings = loaded;
+        Chat = new ChatSession(ChatSettings);
         selected = StartTab();
         alarms = AlarmStore.Load(loaded);
         alarmGroups = AlarmStore.LoadGroups();

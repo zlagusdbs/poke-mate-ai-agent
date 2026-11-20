@@ -187,6 +187,7 @@ public partial class App : Application
         if (model != null)
         {
             try { model.RaiseQuitting(); } catch (Exception ex) { Log($"끝내는 중 오류: {ex.Message}"); }
+            try { model.Chat.StopAllForQuit(); } catch (Exception ex) { Log($"대화를 멈추지 못했어요: {ex.Message}"); }
         }
         foreach (var service in services)
         {
