@@ -275,6 +275,7 @@ public sealed class AppModel : NotifyObject
         catch (Exception e)
         {
             ConnectionError = e.Message;
+            App.Log($"연결 목록 실패: {e.Message} | uv={settings.UvPath} | repoDir={settings.RepoDir} | cwd={Environment.CurrentDirectory}");
         }
         finally { IsLoadingSystems = false; }
     }
