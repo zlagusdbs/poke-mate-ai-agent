@@ -10,6 +10,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from urllib.parse import urlparse
@@ -510,7 +511,22 @@ def cmd_worklog_check(args):
     title = settings().get("worklogCalendarTitle") or "근무 캘린더"
     return post_card(body, [open_url(title, calendar)] if calendar else None, args.dry_run)
 
-EXTRA_PATH = [os.path.join(HOME, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+if sys.platform == "win32":
+    _PROGRAM_FILES = os.environ.get("ProgramFiles", r"C:\Program Files")
+    EXTRA_PATH = [os.path.join(HOME, ".local", "bin"), os.path.join(_PROGRAM_FILES, "Git", "cmd"), os.path.join(_PROGRAM_FILES, "GitHub CLI")]
+else:
+    EXTRA_PATH = [os.path.join(HOME, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+
+def _shell_command(command: str) -> list[str]:
+    """테스트 명령을 돌릴 셸 argv. macOS 는 zsh, Windows 는 Git Bash 가 있으면 bash, 없으면 cmd."""
+    if sys.platform == "win32":
+        bash = shutil.which("bash")
+        # System32 와 WindowsApps 의 bash.exe 는 WSL 실행기라 Git Bash 가 아니다
+        if bash and "system32" not in bash.lower() and "windowsapps" not in bash.lower():
+            return [bash, "-lc", command]
+        return ["cmd", "/c", command]
+    return ["/bin/zsh", "-lc", command]
 
 
 def jira_state_file():
@@ -1328,7 +1344,7 @@ def cmd_run_tests(args):
         raise SystemExit("테스트 명령을 찾지 못했어요. automation.testCommands 에 레포별 명령을 적어 주세요")
     started = dt.datetime.now().timestamp() - 1
     try:
-        out = subprocess.run(["/bin/zsh", "-lc", command], cwd=path, capture_output=True, timeout=args.timeout)
+        out = subprocess.run(_shell_command(command), cwd=path, capture_output=True, timeout=args.timeout)
         code, timed_out = out.returncode, False
         text = out.stdout.decode(errors="replace") + "\n" + out.stderr.decode(errors="replace")
     except subprocess.TimeoutExpired as exc:
@@ -1385,7 +1401,7 @@ def in_window(t, start_hour, end_hour):
 
 
 def cmd_poll(args):
-    os.environ["PATH"] = ":".join(EXTRA_PATH + [p for p in os.environ.get("PATH", "").split(":") if p and p not in EXTRA_PATH])
+    os.environ["PATH"] = os.pathsep.join(EXTRA_PATH + [p for p in os.environ.get("PATH", "").split(os.pathsep) if p and p not in EXTRA_PATH])
     t = now()
     if not args.force and not in_window(t, 9, 19):
         return 0

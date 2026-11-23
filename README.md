@@ -125,19 +125,23 @@ deny 에 있는 것은 승인 카드 없이 거부한다. 고친 내용은 다�
 
 1. **레포 정하기**: 새 건이 오면 가벼운 새 실행으로 처리할 레포만 정한다(읽기만). 이미 그 세션이 처리한 이슈(예: 확인 필요 답변)나 레포 이름이 보이는 PR 은 바로 그 세션으로 간다. 레포가 없는 운영 건은 "운영" 세션 하나에 모인다.
 2. **이어 쓰기**: `claude -p --resume <세션 id>` 로 "이번 건: KEY" 와 처리 지시를 보낸다. 같은 세션에 두 건이 오면 차례로 처리한다.
-3. **자동 처리의 세션 이어 쓰기**: 자동 처리(레포 세션·역할 세션·도메인 리뷰어)는 마지막 사용이 정한 시간(기본 55분, Claude 캐시가 1시간이라 그보다 짧게) 안이고 문맥이 정한 크기(기본 120k) 아래일 때만 이어 쓴다. 아니면 옛 세션을 보관하고 새 세션으로 시작한다(요약은 넘기지 않음. 새 세션은 도메인 노트·지식부터 읽는다). 리뷰어 세션(GitHub 리뷰의 `{도메인}:reviewer`, Jira 역할 처리의 리뷰어 단계)은 기본으로 늘 새로 시작한다(설정 "리뷰어는 늘 새 세션으로 시작", 끄면 같은 기준). 리뷰는 이어 쓰면 앞 건의 판단 습관이 다음 건에 이어지고, 캐시가 살아 있어도 도구를 부를 때마다 앞 문맥을 다시 읽어 더 비쌌다. 새로 시작한 이유(예: "식음 61분 (기준 55분)", "문맥 214K (기준 120K)", "리뷰어는 늘 새로")는 작업 탭 세션 줄에 보인다. 설정 → 작업 세션에서 바꾸고, 둘 다 "늘 이어 쓰기"(0)면 예전처럼 늘 이어 쓴다. 작업 탭에서 사람이 직접 말을 거는 대화는 이 규칙과 관계없이 그 세션을 이어 쓴다.
+3. **자동 처리의 세션 규칙 (하나)**: 자동 처리 세션은 작업 한 건마다 따로다. 한 건은 Jira 역할 처리에서는 티켓 하나(`jira:{KEY}`, 역할 세션 PM·개발·테스터·리뷰어), GitHub 리뷰에서는 PR 하나(`pr:{owner}/{repo}#{number}`, 리뷰어 세션)다. 같은 건 안의 핑퐁만 그 건의 세션을 `--resume` 하고, 건이 바뀌면 같은 도메인이어도 새로 시작한다(`--session-id`). 같은 건이어도 마지막 사용이 정한 시간(기본 55분, Claude 캐시가 1시간이라 그보다 짧게)을 넘었거나 문맥이 정한 크기(기본 120k) 이상이면 새로 시작한다. 이 판단은 앱 Core 의 `SessionPolicy` 한 곳이 모든 자동 처리(Jira 역할 처리·GitHub 리뷰·시험 Trial·평가 Eval)에 같이 쓴다. 역할별 예외(예전 설정 "리뷰어는 늘 새 세션으로 시작")는 없다. 예전 `settings.json` 의 `reviewerAlwaysFresh` 는 읽을 때 무시하고 다시 쓰지 않는다.
+   - **맥락은 파일로**: 세션을 이어 쓰는 것은 캐시 비용을 아끼는 수단일 뿐이고, 일의 맥락은 대화 기록이 아니라 파일로 넘긴다. 역할이 한 차례를 마칠 때 앱이 그 건 파일의 `handoffs` 에 인계 메모 한 줄(`{role, at, summary}`: summary 는 그 차례의 note 와 답 앞부분, 리뷰어는 결과 문서의 결함·미확인 항목 제목 `findings` 도)을 남긴다. 같은 건의 앞 차례가 있는데 새 세션으로 시작하면 역할 프롬프트 앞에 "이번 건 인계" 블록(최근 메모 8개 오래된 것부터, 블록 전체 4,000자 안. 리뷰어에게는 자신의 이전 지적)을 붙인다. 이어 쓰는 세션에는 붙이지 않는다(이미 대화에 있다). 도메인 지식은 노트·지도에 있어 새 세션도 그것부터 읽는다.
+   - **이유·설정**: 새로 시작한 이유(예: "새 티켓 (앞: ACME-100)", "새 PR (앞: sample-web#12)", "식음 61분 (기준 55분)", "문맥 214K (기준 120K)")는 작업 탭 세션 줄에 보인다. 설정 → 작업 세션의 쉰 시간·문맥 크기는 모든 자동 처리 역할 공통이고, 둘 다 "늘 이어 쓰기"(0)면 같은 건 안에서는 늘 이어 쓴다(다른 건은 그래도 새로).
+   - **끝난 건 정리**: 티켓이 끝나면(PM 완료 후 종료, 또는 멈춤) 그 티켓의 역할 세션을, PR 은 리뷰를 승인으로 올렸거나 닫힘·머지됨을 확인하면 그 리뷰어 세션을 보관한다. 보관한 세션은 작업 탭 목록에서 빠지고 기록은 남는다.
+   - **이 규칙을 따르지 않는 것**: 레포 이름 작업 세션의 자동 처리(위 1~2)는 그 레포 자체를 한 건으로 보고 같은 시간·문맥 기준만 쓴다. 사람이 말을 거는 세션(채팅에서 보내기, 직접 만든 레포 작업 세션, 작업 탭에서 말 걸기)은 이 규칙과 관계없이 그 세션을 이어 쓴다(문맥 % 알림만, 바꾸기는 사람이).
 4. **문맥 알림**: 위 규칙 말고는 자동으로 세션을 바꾸지 않는다. 실행(자동 처리·말 걸기)이 끝나 문맥 %를 다시 계산했을 때 설정한 %(기본 70%, 50~90% 또는 끄기)를 처음 넘으면 미리 알림 창과 Mac 알림으로 한 번 알린다. 다시 내려가거나 새 세션으로 바뀌기 전에는 또 알리지 않는다(sessions.json 에 기록). 알림의 [새 세션으로 바꾸기](누르면 "작업" 탭이 열림)나 "작업" 탭 세션 줄의 ⋯ 메뉴에서 직접 바꾸면, 지금까지 익힌 레포 지식을 요약해 새 세션에 넘길지 고른다. 문맥이 가득 차면 Claude Code 가 스스로 대화를 줄인다(자동 compact). 앱은 그 사이 결과 줄만 기다리므로 멈추지 않고, 줄어든 뒤 문맥 %가 내려가면 알림 기록도 풀린다.
 5. **화면**: "작업" 탭 맨 위에 "작업 세션 N개 · 실행 중 K · 이번 달 토큰·비용"(이번 달 1일부터 각 세션 기록 파일의 토큰을 모은 값)을 보여 준다. 목록에서 레포별 마지막 사용·처리한 티켓 수·문맥 %(알림 기준 이상이면 주황)·누적 토큰·실행 중/대기를 보고, 세션을 누르면 아래에 그 세션의 기록(사용자 메시지·Claude 답·도구 호출)과 입력창이 열려 이어서 말을 건다(대화와 같은 승인 카드). ⋯ 메뉴에서 새 세션으로 바꾸거나 보관한다.
-6. **기록 위치**: `~/Library/Application Support/poke-mate/automation/sessions.json` (세션 id, 레포, 만든 시각, 마지막 사용, 처리한 키, 문맥 크기, 누적 토큰·비용). 세션 대화 기록은 PokeMate 전용 로그인 폴더(`claude-config/projects/`)에 생기므로 다른 Claude 앱의 세션 목록에는 나오지 않는다.
+6. **기록 위치**: `~/Library/Application Support/poke-mate/automation/sessions.json` (세션 id, 레포, 만든 시각, 마지막 사용, 처리한 키, 문맥 크기, 누적 토큰·비용). 작업 건 파일은 `automation/pipelines/{KEY}.json`(Jira 티켓)과 `automation/prs/{owner}__{repo}__{number}.json`(PR)이다(둘 다 `sessions`·`handoffs` 같은 모양). 세션 대화 기록은 PokeMate 전용 로그인 폴더(`claude-config/projects/`)에 생기므로 다른 Claude 앱의 세션 목록에는 나오지 않는다.
 
 메이트 대화에서 "NOVA-1234 어느 세션에서 처리했어?", "지금 자동 처리 뭐 하고 있어?" 처럼 물으면 조회 도구 `work_sessions` 로 답한다. 지금 실행 중·대기 중인 건은 앱이 `automation/sessions-live.json` 에 남긴다.
 
 ### 도메인 리뷰어 (GitHub 리뷰)
 
-GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + 작업 세션)은 기본으로 "도메인 리뷰어 세션으로 리뷰"가 켜져 있다. 레포 이름 세션이 아니라 도메인의 리뷰어 세션(`{도메인}:reviewer`, Jira 역할별 처리의 리뷰어와 같은 세션)에서 리뷰해 지식이 한곳에 쌓인다.
+GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + 작업 세션)은 기본으로 "도메인 리뷰어 세션으로 리뷰"가 켜져 있다. 레포 이름 세션이 아니라 도메인의 리뷰어 칸(`{도메인}:reviewer`, 작업 탭에서 Jira 역할별 처리의 리뷰어와 같은 줄)에서 리뷰한다. 세션은 PR 하나마다 따로다(위 작업 세션 3의 규칙): 같은 PR 에 다시 리뷰 요청이 오면 55분·120k 안이면 그 PR 세션을 이어 쓰고, 아니면 새로 시작하며 그 PR 의 인계 메모와 이전 지적을 받는다. 지식은 세션이 아니라 도메인 노트·지도에 쌓인다.
 
 1. **도메인 정하기**: PR 레포가 `local/domains.json` 의 `repos` 에 있으면 그 도메인. 없으면 예전에 정한 기록(`automation/state/review-domains.json`)을 쓰고, 그것도 없으면 PR 제목·본문·바뀐 파일·연결 Jira 를 도메인마다 적은 `description`·`keywords` 와 비교해 정하는 읽기 전용 실행을 한 번 돌린다. 어디에도 맞지 않으면 `default`. 정한 도메인과 이유는 리뷰 본문 "확인한 범위"와 시작 알림, 작업 탭에 보인다. 잘못 정했으면 `domains.json` 의 `repos` 에 넣거나 기록 파일에서 그 줄을 지운다.
-2. **세션**: 처음이면 domain-review 스킬 1절대로 지식을 읽은 뒤 리뷰하고, 이어 쓰면 새로 필요한 것만 읽는다. 같은 도메인의 Jira 역할별 처리와 차례(큐)를 같이 쓴다. 기다리는 건은 작업 탭 도메인 줄의 "대기 n"(마우스를 올리면 목록)에 보인다.
+2. **세션**: 새 세션이면 domain-review 스킬 1절대로 지식을 읽은 뒤 리뷰하고, 같은 PR 을 이어 쓰면 새로 필요한 것만 읽는다. PR 마다 작업 건 파일 `automation/prs/{owner}__{repo}__{number}.json`(`key`·`status`(open·approved·closed)·`sessions`·`handoffs`·`archivedAt`)을 둔다. 리뷰어의 마지막 답 첫 줄(`{repo}#{n} · 결과 · …`)이 승인이거나 닫힘이면 그 PR 건을 보관한다(같은 PR 에 다시 요청이 오면 다시 연다). 같은 도메인의 Jira 역할별 처리와 차례(큐)를 같이 쓴다. 기다리는 건은 작업 탭 도메인 줄의 "대기 n"(마우스를 올리면 목록)에 보인다.
 3. **도메인 노트 (데스크톱과 같이 쓴다)**: 노트 폴더(기본 `~/.claude/references/notes`, 설정 `domainNotesDir`) 아래 `{도메인}/checklist.md`(그 도메인을 건드릴 때 반드시 답할 질문, 사람이 확정)와 `{도메인}/notes.md`(코드·문서로 확인한 사실, 종류별 절: 용어집·업무 규칙·장애·함정·결정·동작). `{도메인}/maps/{주제}.md` 는 여러 저장소·문서를 읽은 건 뒤에 남기는 지도(관련 저장소·호출 흐름·데이터 위치·읽은 문서를 위치 중심으로)다. 앱은 안내 줄에 지도 주제 목록(최대 20개)을 넣어 주제가 맞으면 먼저 읽게 한다. 자동 실행은 이 폴더를 읽기만 하고, 쓰기는 `pokemate auto domain-note --kind …`·`domain-map` 으로만 한다(파일 직접 편집은 막힌다. git 은 부르지 않으니 노트 폴더가 Git 저장소면 커밋은 사람이 한다). 노트 폴더가 심볼릭 링크면 앱이 실제 경로로 풀어 읽기 폴더에 넣는다(Claude 권한은 실제 경로로 판단). 도메인 폴더가 없으면 helper 가 빈 틀을 만들고 결과·알림에 "점검표가 아직 없음"을 남긴다. 쓰는 규칙은 노트 폴더의 `README.md`.
 4. **리뷰 절차는 스킬이 원본**: 판단(깊이 → 지식 읽기 → 코드 읽기 → 점검표 답하기 → 후보 분류 → 판정 → 결과 문서 → 노트)은 홈의 `domain-review` 스킬(`~/.claude/skills/domain-review`)을 그대로 따른다. 데스크톱에서 리뷰할 때와 같은 스킬이다. 프롬프트(`github-review`·`jira-reviewer`)는 PokeMate 고유 단계(확인·알림·`gh-review` 등록·`review-state`, 명령 사용법)만 정한다. 결함이나 미확인이 하나라도 있으면 승인하지 않고 질문을 담은 댓글 리뷰로 올린다. 스킬은 앱이 홈 스킬을 작업 폴더에 연결할 때(실행마다) 같이 연결되고, 허용 목록에 `Skill(domain-review)` 가 있어야 한다.
 5. **로컬 레포가 없을 때**: `pokemate auto gh-file --repo … --ref … --path …` 로 PR 저장소 파일을 읽는다(읽기 전용, 리뷰 중에는 그 PR 저장소만).
@@ -149,7 +153,7 @@ GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + �
 1. **문제 묶음**: `local/eval/reviews.json` (Git 밖). 문제마다 `id`, `url`(PR 주소), `domain`(비우면 domains.json·기록으로 정함), `mustFind`(꼭 나와야 할 지적: `{"name": "…", "all": [["낱말", "다른 표현"], ["낱말"]]}` — 묶음마다 하나 이상이 결함·미확인 절에 나오면 맞힘), `mustNotVerdict`(나오면 안 되는 판정, 예: `["승인"]`), 선택 `expectVerdict`·`expectDepth`(가볍게·보통·깊게). `mustFind` 항목에 `"in": ["결함"]` 을 주면 그 절에서만 찾는다(미확인으로만 낸 것은 놓침). 예시는 `shared/eval/reviews.example.json`.
    - **가상 레포 문제**: `url` 대신 `"fixture": "이름"` 을 쓰면 `local/eval/fixtures/이름/`(없으면 `shared/eval/fixtures/이름/`)의 `case.json`(티켓 키·제목·레포·브랜치·PM 개발 지시서·앞 단계 말), `base/`(기준 파일), `head/`(바뀐 파일)로 가상 레포와 작업 폴더를 만들고, Jira 역할 처리의 리뷰어 경로(지시서 + diff 파일 + 작업 폴더)로 리뷰한다. `shared/eval/fixtures/acme-coupon-boundary` 는 최소 주문 금액 경계값 결함(`>` 를 `>=` 로)을 하나 심은 문제다.
 2. **실행**: `app-mac/scripts/review-eval.sh [묶음 파일] [--case id]` 가 문제마다 새 세션으로 실제 자동 리뷰와 같은 프롬프트(github-review + 도메인 리뷰어 안내 + 공유 노트)와 domain-review 스킬로 리뷰한다. 쓰기는 두 겹으로 막는다: 허용 목록에 읽기 명령(gh-get·gh-diff·gh-file·git-read·jira-get·jira-comments)과 스킬만 넣고, `POKEMATE_EVAL=1` 이면 helper 가 쓰기 명령을 모두 거절한다. 결과 문서는 답 끝 `pokemate-eval` 블록으로 받는다.
-   - `--reuse always|default|분,토큰` 을 주면 문제를 차례로 돌리며 실제처럼 `{도메인}:reviewer` 세션을 그 규칙으로 이어 쓴다(세션 기록은 결과 폴더의 `sessions.json`). 없으면 문제마다 새 세션. 세션 규칙을 바꾼 전후 비교에 쓴다.
+   - `--reuse always|default|분,토큰` 을 주면 앱과 같은 세션 규칙(`SessionPolicy`)으로 문제마다 세션을 고른다: 같은 건(같은 PR·같은 가상 티켓)만 그 기준으로 이어 쓰고 다른 건은 새로 시작한다(세션 기록은 결과 폴더의 `sessions.json`). 없으면 문제마다 새 세션.
 3. **결과**: `local/eval/runs/{시각}/` 에 문제마다 답 원문(`{id}.md`)·실행 정보(`{id}.json`: 비용·시간·토큰·부른 스킬)와 채점표(`score.md`·`score.json`: 통과·판정·깊이·맞힘/놓침·위반·비용·시간·세션(이어 쓰기/새로와 이유)·끝 문맥·스킬·원문 경로). 핵심어 일치라 표현이 다르면 놓침으로 나올 수 있으니 원문을 같이 본다.
 4. **데스크톱과 비교**: 데스크톱에서 같은 PR 을 domain-review 스킬로 리뷰한 결과 문서를 한 폴더에 `{id}.md` 로 두고 `pokemate auto eval-score --cases local/eval/reviews.json --results {폴더} --label 데스크톱` 으로 같은 표를 만든다.
 
@@ -157,13 +161,13 @@ GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + �
 
 트리거 알람에서 "레포별 작업 세션 이어 쓰기" 아래 "역할별 세션으로 나눠 처리"를 켜면, 레포 세션 하나가 다 하던 Jira 처리를 역할 세션 4개(PM·개발·테스터·리뷰어)가 나눠 맡는다.
 
-1. **도메인**: 레포 정하기 결과 레포를 `local/domains.json`(예: `{"acme": {"repos": ["acme-sample-service", "acme-sample-web"], "knowledge": ["acme-kb", "~/.claude/references/acme-wiki"]}, "default": {"knowledge": ["acme-kb"]}}`)으로 도메인에 묶는다. `knowledge` 는 지식 모으기 때 읽는 읽기 전용 지식 저장소(`~/Workspace` 아래 폴더 이름 또는 경로)로, 프롬프트의 `{{knowledge}}` 자리에 들어가고 역할 세션의 읽기 폴더에 더해진다. 도메인에 `knowledge` 가 없으면 `default` 를 쓴다(역할별 처리를 끈 `jira.md` 도 같은 값). 어느 도메인에도 없으면 레포 이름이 도메인이다. 역할 세션은 `sessions.json` 에 `{도메인}:{역할}` 키로 남고, 같은 도메인은 한 번에 티켓 하나씩 처리한다.
+1. **도메인**: 레포 정하기 결과 레포를 `local/domains.json`(예: `{"acme": {"repos": ["acme-sample-service", "acme-sample-web"], "knowledge": ["acme-kb", "~/.claude/references/acme-wiki"]}, "default": {"knowledge": ["acme-kb"]}}`)으로 도메인에 묶는다. `knowledge` 는 지식 모으기 때 읽는 읽기 전용 지식 저장소(`~/Workspace` 아래 폴더 이름 또는 경로)로, 프롬프트의 `{{knowledge}}` 자리에 들어가고 역할 세션의 읽기 폴더에 더해진다. 도메인에 `knowledge` 가 없으면 `default` 를 쓴다(역할별 처리를 끈 `jira.md` 도 같은 값). 어느 도메인에도 없으면 레포 이름이 도메인이다. 작업 탭은 `sessions.json` 의 `{도메인}:{역할}` 키로 도메인마다 역할 4줄을 보여 주고(지금 처리 중이거나 마지막 건의 세션과 새로 시작한 이유. 끝나 보관한 칸은 "끝난 건 KEY" 로), 같은 도메인은 한 번에 티켓 하나씩 처리한다.
 2. **흐름 (Story)**: PM(확인·지식 모으기·계획 댓글·레포·브랜치·개발 지시서) → PokeMate(`create-branch`·`worktree-add`) → 개발(W 안에서 코드·테스트) → 테스터(`run-tests` 와 완료 조건 대조, 테스트를 쓰지 않음) → PM(통과 확인) → 리뷰어(W 의 변경을 `domain-review` 스킬로 리뷰. 승인이면 push, 결함이면 개발, 미확인만 있으면 PM) → PokeMate(`commit-push`) → PM(In Review·결과 댓글·노트 남기기·여러 저장소·문서를 읽은 건이면 지도 남기기·알림). PM 은 계획 댓글 전에 도메인 점검표에 답하고 미확인이 있으면 확인 필요로 멈춘다. 개발은 바꾼 코드를 지시서의 점검표 답과 다시 대조한다. Task(운영 건)는 PM 하나로 끝낸다. Jira 댓글은 PM 만 쓴다.
-3. **넘기기**: 역할끼리는 말을 못 하므로 각 역할은 답 끝에 `pokemate-next` 블록(`{"next": "tester|dev|pm|reviewer|push|stop", "note": "…"}`)을 붙이고, 앱이 읽어 다음 역할 세션을 `--resume` 으로 부른다. 앞 단계의 note·답 요약과 PM 개발 지시서가 다음 역할 프롬프트에 붙는다. 블록이 없거나 깨지거나 그 역할에 허용되지 않은 next 면 멈추고 blocked 알림을 보낸다.
+3. **넘기기**: 역할끼리는 말을 못 하므로 각 역할은 답 끝에 `pokemate-next` 블록(`{"next": "tester|dev|pm|reviewer|push|stop", "note": "…"}`)을 붙이고, 앱이 읽어 다음 역할 세션을 `--resume` 으로 부른다. 앞 단계의 note·답 요약과 PM 개발 지시서가 다음 역할 프롬프트에 붙는다. 세션은 위 작업 세션 3의 규칙 하나로 정한다: 같은 티켓 안에서만 이어 쓰고(리뷰어도 같다), 다른 티켓이 오면 역할 세션을 모두 새로 시작하며(작업 탭에 "새 티켓 (앞: KEY)"), 같은 티켓이라도 55분·120k 를 넘긴 세션은 새로 시작해 "이번 건 인계" 블록과 진행 상태·노트·지도에서 이어 간다. note 는 다음 단계에 전달될 뿐 아니라 그 티켓의 인계 메모로도 남는다. 블록이 없거나 깨지거나 그 역할에 허용되지 않은 next 면 멈추고 blocked 알림을 보낸다.
 4. **되돌림 상한**: 테스터→개발 2번, 리뷰어→개발 2번. 넘으면 PM 이 확인 필요(또는 개발 중단) 댓글을 남기고 멈춘다. 확인 필요 답이 달리면 PM 부터 다시 시작한다(되돌림 0).
 5. **권한**: 역할마다 `--tools`·허용 명령을 따로 준다(`local/pipeline-tools.json`, 없으면 기본값으로 만든다). PM 은 Jira 읽기·쓰기·알림·git-read, 개발은 W 안 Edit/Write·run-tests·git-read, 테스터는 run-tests·git-read, 리뷰어는 `Skill(domain-review)`·`Skill(code-review)`·git-read·domain-note. PM 도 domain-note 를 쓴다. 노트 폴더는 PM·개발·리뷰어의 읽기 폴더에 앱이 더한다. `commit-push`·`create-branch`·`worktree-add` 는 어떤 역할에도 주지 않고 앱이 직접 실행한다.
 6. **프롬프트**: `local/prompts/`(없으면 `shared/prompts/`)의 `jira-common`(공통 명령·규칙)과 `jira-pm`·`jira-dev`·`jira-tester`·`jira-reviewer`. `{{helper}}` 는 helper 명령으로 바뀐다.
-7. **진행 상태**: 티켓마다 `automation/pipelines/{KEY}.json`(지금 단계, 되돌림 횟수, 레포·브랜치·W, 역할별 비용, 지나온 단계)에 남겨 앱을 다시 켜도 이어 간다. "작업" 탭은 도메인마다 역할 4줄과 지금 단계(예: `ACME-101 · tester 2/2`)를 보여 준다.
+7. **진행 상태**: 티켓마다 `automation/pipelines/{KEY}.json`(지금 단계, 되돌림 횟수, 레포·브랜치·W, 역할별 비용, 지나온 단계, 역할별 세션 `sessions`: `{"dev": {"id": "…", "lastUsed": "2026-11-20T09:34:25Z", "contextTokens": 100}}`, 인계 메모 `handoffs`: `[{"role": "reviewer", "at": "2026-11-20T09:40:00Z", "summary": "…", "findings": ["결함: …"]}]`. 옛 파일에는 없어도 읽는다)에 남겨 앱을 다시 켜도 이어 간다. 티켓이 끝나면(done·멈춤) 그 티켓의 역할 세션을 보관한다. "작업" 탭은 도메인마다 역할 4줄과 지금 단계(예: `ACME-101 · tester 2/2`)를 보여 준다.
 
 알람 실행(시각·트리거·작업 세션)마다 입력·출력·캐시 토큰과 추정 비용을 `alarm-runs.json` 에 남기고, 알람 행의 마지막 결과 옆에 보여 준다.
 
@@ -206,11 +210,21 @@ uv --directory <저장소>/mcp-server run --quiet pokemate auto <하위명령> [
 
 ## 준비물
 
+**macOS**
+
 - macOS 15 이상, Xcode Command Line Tools (`xcode-select --install`)
 - [Claude Code](https://code.claude.com) CLI
 - [uv](https://docs.astral.sh/uv/) (`brew install uv`)
 - (선택) [GitHub CLI](https://cli.github.com) `gh` — GitHub 이벤트용
 - (선택) claude.ai → 설정 → 커넥터에서 Microsoft 365 연결
+
+**Windows** (11 기준)
+
+- .NET SDK 7.0 이상과 .NET Desktop Runtime (`net7.0-windows`. 앱은 프레임워크 의존이라 런타임을 같이 내려받지 않는다)
+- [Claude Code](https://code.claude.com) CLI (`%USERPROFILE%\.local\bin\claude.exe`)
+- [uv](https://docs.astral.sh/uv/) (설치 스크립트 기본 위치 `%USERPROFILE%\.local\bin\uv.exe`). Python 3.12 는 uv 가 받는다.
+- [Git for Windows](https://git-scm.com/download/win) — Claude Code 의 Bash 가 Git Bash 로 돌고, `{{helper}}` 명령과 `run-tests` 가 이것으로 실행된다
+- (선택) GitHub CLI `gh`, claude.ai 의 Microsoft 365 커넥터는 맥과 같다
 
 ## 설치
 
@@ -230,6 +244,34 @@ cd mcp-server && uv sync && uv run pytest && cd ..
 open app-mac/build/PokeMate.app
 ```
 
+### Windows 설치
+
+PowerShell 에서 (저장소는 길지 않은 경로에 두고 `git config core.longpaths true` 를 켜 둔다):
+
+```powershell
+git clone https://github.com/zlagusdbs/poke-mate-ai-agent.git $env:USERPROFILE\Workspace\poke-mate-ai-agent
+cd $env:USERPROFILE\Workspace\poke-mate-ai-agent
+
+# 1. 이 PC 의 설정 폴더 local\ (Git 에 올라가지 않는다. 다른 PC 에서 쓰던 local\ 이 있으면 그것을 복사)
+Copy-Item -Recurse local.example local
+#    → local\connections.json 의 baseUrl 을 실제 주소로 바꾼다
+
+# 2. MCP 서버
+cd mcp-server; uv sync; uv run pytest; cd ..
+
+# 3. 앱 묶기와 설치
+.\app-win\scripts\bundle.ps1
+.\app-win\scripts\install.ps1
+```
+
+- `bundle.ps1`: `dotnet publish` 로 `app-win\build\PokeMate\` 를 만든다.
+- `install.ps1`: 실행 중인 `PokeMate.exe` 를 끄고 `%LOCALAPPDATA%\Programs\PokeMate` 로 복사한 뒤 시작 메뉴에 `PokeMate` 바로 가기를 만든다. 앱은 켜지 않으므로 시작 메뉴에서 `PokeMate` 를 실행한다. 트레이 아이콘이 안 보이면 작업 표시줄의 숨겨진 아이콘(^)을 열어 끌어 올린다.
+- 설정의 "Windows 시작 시 실행" 스위치를 켜면 로그인할 때 자동으로 켜진다(기본 꺼짐).
+- 데이터 폴더는 `%LOCALAPPDATA%\poke-mate`(환경 변수 `POKEMATE_DATA_DIR` 가 있으면 그 폴더), 저장소 기본 위치는 `%USERPROFILE%\Workspace\poke-mate-ai-agent`, `claudePath`·`uvPath` 기본값은 `%USERPROFILE%\.local\bin` 의 `claude.exe`·`uv.exe`. 연결 계정은 Windows 자격 증명 관리자(서비스 이름 `poke-mate`)에 저장한다.
+- 명령 알람은 `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command` 로 실행한다. 맥에서 가져온 `local\` 의 `./gradlew` 같은 명령은 Git Bash 로 도는 곳(`run-tests`)에서만 그대로 동작한다. `~/` 경로는 홈 폴더로 풀린다.
+- 알림은 트레이 풍선 알림(Windows 알림 센터에 뜬다)이고, 기본 단축키는 `Ctrl+Alt+Shift+Space`.
+- 앱의 Claude 로그인 정보는 데이터 폴더의 `claude-config` 에 따로 두며 `~\.claude` 의 로그인과 섞지 않는다.
+
 ### 설정은 어디에
 
 설정은 레포 한 곳(`~/Workspace/poke-mate-ai-agent`)에서 찾는다. 세 층을 아래부터 차례로 덮어쓴다(같은 이름이면 위 층이 이김).
@@ -239,7 +281,7 @@ open app-mac/build/PokeMate.app
 | 기본 | `~/.claude/skills`, `~/.claude/rules` | 회사·개인 지식(Claude Code 와 같이 씀) | 레포 밖 |
 | 일반 | `shared/CLAUDE.md`, `shared/skills/`, `shared/rules/`, `shared/prompts/` | 회사 값 없는 일반 지시·알람 프롬프트 뼈대. 앱이 직접 읽는다 | 올라감 |
 | 회사·개인 | `local/` (CLAUDE.md, skills/, rules/, prompts/, alarms.json, alarm-groups.json, write-tools.json, pipeline-tools.json, domains.json, connections.json, bundle.json, banned-terms.txt) | 이 PC 의 회사 값과 알람 | 안 올라감 |
-| 실행 기록 | `~/Library/Application Support/poke-mate/` | settings.json(레포 위치 등), 대화·세션·로그·캐시·로그인·웹훅 주소 | 레포 밖 |
+| 실행 기록 | `~/Library/Application Support/poke-mate/` (Windows: `%LOCALAPPDATA%\poke-mate`) | settings.json(레포 위치 등), 대화·세션·로그·캐시·로그인·웹훅 주소 | 레포 밖 |
 
 - `shared/app/` 은 앱 자체의 시스템 안내(`system.md`, `daily-report.md`)라 설정 목록에 보이지 않는다.
 - `local/` 이 없거나 ⚙︎ 설정의 "메이트 저장소"가 틀리면 알람·규칙을 읽기만 하고 저장하지 않는다(빈 알람으로 덮어쓰지 않게). 설정 화면에 경고와 [예시(local.example)로 local 만들기]가 뜬다.
@@ -251,7 +293,7 @@ open app-mac/build/PokeMate.app
 - `local/bundle.json`: `{"bundleId": "…"}` 가 있으면 `bundle.sh` 가 그 번들 ID 로 묶는다(없으면 `Info.plist` 의 `io.pokemate.app`). 이미 쓰던 번들 ID 를 그대로 두면 알림 권한·메뉴바 위치가 유지된다.
 - `local/banned-terms.txt`: push 전에 막을 금지어 한 줄에 하나. `.git/hooks/pre-push` 가 push 되는 커밋의 파일 내용·파일 이름·커밋 메시지를 검사해 하나라도 있으면 파일과 줄 번호를 보여 주고 멈춘다. 지금 올릴 상태를 미리 보려면 `git add -A && .git/hooks/pre-push --check --index`.
 
-저장소를 `~/Workspace/poke-mate-ai-agent` 가 아닌 곳에 두었다면 ⚙︎ 설정의 "메이트 저장소"를 바꾼다.
+저장소를 `~/Workspace/poke-mate-ai-agent`(Windows: `%USERPROFILE%\Workspace\poke-mate-ai-agent`)가 아닌 곳에 두었다면 ⚙︎ 설정의 "메이트 저장소"를 바꾼다.
 
 터미널에서 `uv --directory …` 없이 `pokemate` 로 바로 부르려면 한 번 설치한다. 저장소 코드를 고치면 바로 반영된다(`--editable`).
 
@@ -291,7 +333,19 @@ cd app-mac && ./scripts/pipeline-trial.sh /tmp/pm-trial   # Jira 역할 처리 �
 cd app-mac && ./scripts/review-eval.sh                    # 리뷰 기준 문제 묶음 (local/eval/reviews.json, 쓰기 막고 실제 Claude 실행)
 ```
 
-연결 계정은 macOS 키체인(서비스 이름 `poke-mate`)에 저장한다.
+Windows (PowerShell, 저장소 루트에서):
+
+```powershell
+cd mcp-server; uv run pytest; cd ..                                              # Python 테스트
+dotnet run --project app-win\src\PokeMate.CoreChecks                             # C# 로직 검증 (마지막 줄 failed: 0)
+.\app-win\scripts\bundle.ps1                                                     # 앱 묶기 → app-win\build\PokeMate
+.\app-win\scripts\install.ps1                                                    # %LOCALAPPDATA%\Programs\PokeMate 에 설치
+.\app-win\scripts\pipeline-trial.ps1 -Root $env:TEMP\pm-trial                    # Jira 역할 처리 시험 (가짜 Jira·로컬 원격, 실제 Claude 실행)
+.\app-win\scripts\pipeline-trial.ps1 -Root $env:TEMP\pm-trial -FakeClaude        # 같은 시험을 가짜 claude(PokeMate.Trial 자신)로: -Key ACME-102 -Keep 로 이어서, -Review <PR 주소> 로 GitHub 리뷰 한 차례
+.\app-win\scripts\review-eval.ps1                                                # 리뷰 기준 문제 묶음
+```
+
+연결 계정은 macOS 키체인(Windows: 자격 증명 관리자)에 서비스 이름 `poke-mate` 로 저장한다.
 
 ## 참고한 프로젝트
 

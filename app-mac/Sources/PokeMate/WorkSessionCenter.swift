@@ -25,9 +25,10 @@ final class WorkSessionCenter: ObservableObject {
         book.applyTranscript(repo: repo, usage: total.usage, lastContext: total.lastContext)
     }
 
+    /// 레포 세션을 이어 쓸 Claude 세션 id (새로 시작해야 하면 nil). 이어 쓸지 정하는 규칙은 Core 의 `SessionPolicy.decide` 하나다.
     func reuseSession(_ key: String) -> String? {
         let before = book.sessions[key]
-        let id = book.reuseId(key, policy: SessionReuse(settings: AppPaths.loadSettings()), now: Date())
+        let id = book.reuseId(key, policy: SessionPolicy(settings: AppPaths.loadSettings()), now: Date())
         if book.sessions[key] != before { save() }
         return id
     }
@@ -350,7 +351,7 @@ extension WorkSessionCenter {
             enqueuePipeline(state, chat: chat) { response, _ in
                 switch response {
                 case .success(let text, _): notify("Jira 역할 처리 이어서 끝남 · \(state.key)", text, false)
-                case .failure(let failure): notify("Jira 역할 처리 멈춤 · \(state.key)", failure.message, true)
+                case .failure(let failure): notify("Jira 역할 처리 멈춤 · \(state.key)", failure.backgroundMessage, true)
                 }
             }
         }
@@ -394,7 +395,6 @@ extension WorkSessionCenter {
             },
             helper: { args in await Self.runHelper(args, settings: settings) },
             diff: { worktree in await Self.worktreeDiff(worktree) },
-            sessionId: { [weak self] key in await self?.reuseSession(key) },
             recordSession: { [weak self] sessionKey, id, ticket, usage in
                 await self?.recordRoleSession(sessionKey, id: id, ticket: ticket, usage: usage)
             },
@@ -404,12 +404,30 @@ extension WorkSessionCenter {
             },
             notice: { [weak self] title, body in
                 await self?.pipelineNotice(title, body)
+            },
+            policy: { SessionPolicy(settings: AppPaths.loadSettings()) },
+            sessionChosen: { [weak self] sessionKey, caseKey, resumeId, reason in
+                await self?.chooseRoleSession(sessionKey, caseKey: caseKey, resumeId: resumeId, reason: reason)
+            },
+            archiveCase: { [weak self] ticket, sessionKeys in
+                await self?.archiveCase(sessionKeys, label: ticket)
             })
         let final = await JiraPipeline.run(start, io: io, config: config)
         running[domain] = nil
         pipelines[domain] = final
         refreshMonth()
         return final
+    }
+
+    /// 역할 세션을 고른 결과를 작업 탭 기록(`{도메인}:{역할}`)에 맞춘다. 이어 쓰면 그대로, 새로 시작하면 앞 세션을 보관하고 이유(새 티켓·새 PR·식음·문맥)를 남긴다.
+    private func chooseRoleSession(_ sessionKey: String, caseKey: String, resumeId: String?, reason: String?) {
+        guard resumeId == nil else { return }
+        if book.startFresh(repo: sessionKey, caseKey: caseKey, reason: reason, now: Date()) { save() }
+    }
+
+    /// 끝난 건의 역할 세션을 보관한다 (작업 탭 목록에서 빠지고 기록은 남는다)
+    private func archiveCase(_ sessionKeys: [String], label: String) {
+        if book.archiveCase(sessionKeys, label: label) { save() }
     }
 
     private func recordRoleSession(_ sessionKey: String, id: String, ticket: String, usage: RunUsage?) {
@@ -435,7 +453,7 @@ extension WorkSessionCenter {
         if quitting { return PipelineRoleResult(usage: usage, interrupted: true) }
         switch response {
         case .success(let text, let id): return PipelineRoleResult(text: text, sessionId: id.isEmpty ? nil : id, usage: usage)
-        case .failure(let failure): return PipelineRoleResult(sessionId: nil, usage: usage, failure: failure.message)
+        case .failure(let failure): return PipelineRoleResult(sessionId: nil, usage: usage, failure: failure.backgroundMessage)
         }
     }
 
@@ -514,7 +532,14 @@ extension WorkSessionCenter {
         running[domain] = label
         reviewing[domain] = "\(label) · \(why)"
         let key = DomainReview.sessionKey(domain)
-        let sessionId = reuseSession(key)
+        // 세션은 PR 한 건마다 (PR 파일의 sessions). 새로 시작하면 작업 탭 칸의 앞 세션은 보관하고 이유를 남긴다.
+        let begun = ReviewCase.begin(target: target, domain: domain, policy: SessionPolicy(settings: AppPaths.loadSettings()), now: Date())
+        var review = begun.review
+        let decision = begun.decision
+        review.save()
+        let sessionId = decision.resumeId
+        let freshId = sessionId == nil ? UUID().uuidString.lowercased() : nil
+        if sessionId == nil { chooseRoleSession(key, caseKey: review.key, resumeId: nil, reason: decision.reason) }
         let map = DomainMap.load()
         let notes = DomainNotes.load()
         var runAccess = access
@@ -523,17 +548,25 @@ extension WorkSessionCenter {
         let prompt = DomainReview.reviewPrompt(target: target, domain: domain, why: why, source: source, firstRun: sessionId == nil,
                                                notes: notes, helper: helper,
                                                context: context.replacingOccurrences(of: DomainMap.placeholder, with: map.knowledgeText(for: domain))
-                                                   .replacingOccurrences(of: "{{helper}}", with: helper))
+                                                   .replacingOccurrences(of: "{{helper}}", with: helper),
+                                               handoff: review.handoffBlock(decision))
         let (response, usage) = await runOnce(chat: chat, title: "\(title) · \(key)", prompt: prompt, access: runAccess,
-                                              timeout: alarm.automationTimeout, sessionId: sessionId, quiet: false,
+                                              timeout: alarm.automationTimeout, sessionId: sessionId, newSessionId: freshId, quiet: false,
                                               extraEnvironment: ["POKEMATE_REVIEW_REPO": target.fullName])
-        if case .success(_, let newId) = response, !newId.isEmpty {
-            book.record(repo: key, sessionId: newId, key: target.label, usage: usage, now: Date())
-        } else if let usage, let id = sessionId {
-            book.record(repo: key, sessionId: id, key: target.label, usage: usage, now: Date())
+        var usedId: String?
+        var answer: String?
+        if case .success(let text, let newId) = response {
+            answer = text
+            usedId = newId.isEmpty ? (usage != nil ? sessionId ?? freshId : nil) : newId
+        } else if usage != nil {
+            usedId = sessionId ?? freshId
         }
+        if let usedId { book.record(repo: key, sessionId: usedId, key: target.label, usage: usage, now: Date()) }
+        let done = review.finish(sessionId: usedId, usage: usage, answer: answer, now: Date())
+        review.save()
         refreshUsage(key)
         checkAlert(key)
+        if done != nil { book.archiveCase([key], label: target.label) }
         save()
         refreshMonth()
         running[domain] = nil

@@ -150,6 +150,19 @@ public struct PipelineNext: Equatable, Sendable {
     }
 }
 
+/// 한 티켓의 한 역할 세션 (`sessions` 의 값). 같은 티켓 안에서만 이어 쓴다.
+public struct PipelineSession: Codable, Equatable, Sendable {
+    public var id: String
+    public var lastUsed: Date
+    public var contextTokens: Int
+
+    public init(id: String, lastUsed: Date, contextTokens: Int) {
+        self.id = id
+        self.lastUsed = lastUsed
+        self.contextTokens = contextTokens
+    }
+}
+
 public struct PipelineState: Codable, Equatable, Sendable {
     public enum Stage: String, Codable, Sendable { case pm, dev, tester, reviewer, branch, push, waiting, done, stopped }
 
@@ -198,6 +211,10 @@ public struct PipelineState: Codable, Equatable, Sendable {
     public var reason: String?
     public var inflight: Inflight?
     public var costs: [String: Double] = [:]
+    /// 역할(pm·dev·tester·reviewer) → 이 티켓의 그 역할 세션. 없으면(옛 파일·아직 안 돎) nil 이고 파일에도 안 적는다.
+    public var sessions: [String: PipelineSession]?
+    /// 인계 메모: 역할이 한 차례를 마칠 때마다 한 줄 (오래된 것부터). 없으면(옛 파일·아직 안 돎) nil 이고 파일에도 안 적는다.
+    public var handoffs: [CaseHandoff]?
     public var history: [Step] = []
     public var timeoutMinutes: Int
     public var createdAt: Date
@@ -228,6 +245,29 @@ public struct PipelineState: Codable, Equatable, Sendable {
     public var role: PipelineRole? { PipelineRole(rawValue: stage.rawValue) }
 
     public var totalCost: Double { costs.values.reduce(0, +) }
+
+    /// 이 티켓 한 건의 키 `jira:{KEY}` (세션 단위)
+    public var caseKey: String { SessionPolicy.jiraKey(key) }
+
+    /// 이 티켓의 그 역할 세션 (`SessionPolicy.decide` 의 입력). 없으면 nil.
+    public func previousSession(for role: PipelineRole) -> SessionPolicy.Previous? {
+        guard let s = sessions?[role.rawValue], !s.id.isEmpty else { return nil }
+        return SessionPolicy.Previous(caseKey: caseKey, id: s.id, lastUsed: s.lastUsed, contextTokens: s.contextTokens)
+    }
+
+    /// 역할이 한 차례를 마치면 인계 메모를 남긴다: note 와 답 앞부분, 리뷰어는 결함·미확인 항목 제목도.
+    public mutating func addHandoff(role: PipelineRole, note: String, answer: String, now: Date) {
+        let findings = role == .reviewer ? Handoffs.findings(note + "\n" + PipelineNext.strip(answer)) : nil
+        handoffs = Handoffs.append(handoffs, CaseHandoff(role: role.rawValue, at: now, summary: Handoffs.summary(note: note, answer: answer), findings: findings))
+    }
+
+    /// 역할 실행이 끝난 뒤 이 티켓의 그 역할 세션을 기록한다. 같은 세션이면 사용량을 못 받았을 때 문맥 토큰을 그대로 둔다.
+    public mutating func recordSession(role: PipelineRole, id: String, usage: RunUsage?, now: Date) {
+        var all = sessions ?? [:]
+        let before = all[role.rawValue].flatMap { $0.id == id ? $0.contextTokens : nil } ?? 0
+        all[role.rawValue] = PipelineSession(id: id, lastUsed: now, contextTokens: usage?.context ?? before)
+        sessions = all
+    }
 
     public var statusText: String {
         switch stage {
@@ -441,25 +481,34 @@ public struct PipelineIO: Sendable {
     public var runRole: @Sendable (PipelineRole, String, String?, String?, ClaudeCommand.WriteAccess) async -> PipelineRoleResult
     public var helper: @Sendable ([String]) async -> (ok: Bool, output: String)
     public var diff: @Sendable (String) async -> String?
-    public var sessionId: @Sendable (String) async -> String?
     public var recordSession: @Sendable (String, String, String, RunUsage?) async -> Void
     public var save: @Sendable (PipelineState) async -> Void
     public var notice: @Sendable (String, String) async -> Void
+    /// 세션 이어 쓰기 기준 (설정). 기본값은 55분·12만 토큰
+    public var policy: @Sendable () -> SessionPolicy
+    /// (세션 키, 건 키 `jira:{KEY}`, 이어 쓸 세션 id 또는 nil, 새로 시작하는 이유 또는 nil): 역할을 실행하기 전에 고른 결과를 알린다 (작업 탭 기록용)
+    public var sessionChosen: @Sendable (String, String, String?, String?) async -> Void
+    /// (티켓 키, 그 도메인의 역할 세션 키들): 티켓이 끝나면(done·stopped) 그 건의 역할 세션을 보관한다 (작업 탭 기록용)
+    public var archiveCase: @Sendable (String, [String]) async -> Void
 
     public init(runRole: @escaping @Sendable (PipelineRole, String, String?, String?, ClaudeCommand.WriteAccess) async -> PipelineRoleResult,
                 helper: @escaping @Sendable ([String]) async -> (ok: Bool, output: String),
                 diff: @escaping @Sendable (String) async -> String?,
-                sessionId: @escaping @Sendable (String) async -> String?,
                 recordSession: @escaping @Sendable (String, String, String, RunUsage?) async -> Void,
                 save: @escaping @Sendable (PipelineState) async -> Void,
-                notice: @escaping @Sendable (String, String) async -> Void = { _, _ in }) {
+                notice: @escaping @Sendable (String, String) async -> Void = { _, _ in },
+                policy: @escaping @Sendable () -> SessionPolicy = { SessionPolicy() },
+                sessionChosen: @escaping @Sendable (String, String, String?, String?) async -> Void = { _, _, _, _ in },
+                archiveCase: @escaping @Sendable (String, [String]) async -> Void = { _, _ in }) {
         self.runRole = runRole
         self.notice = notice
         self.helper = helper
         self.diff = diff
-        self.sessionId = sessionId
         self.recordSession = recordSession
         self.save = save
+        self.policy = policy
+        self.sessionChosen = sessionChosen
+        self.archiveCase = archiveCase
     }
 }
 
@@ -506,12 +555,16 @@ public struct PipelineConfig: Sendable {
 public enum JiraPipeline {
     public static let interruptedNote = "앱이 꺼져서 이 역할 실행이 중간에 끊겼다. 이미 한 일(Jira 댓글·상태·알림·jira-state·W 파일 수정)을 Jira·W·기록으로 먼저 확인하고, 이미 한 것은 다시 하지 말고 남은 것만 이어서 한다. 끝나면 아래 지시대로 답 끝 블록을 붙인다."
 
-    public static let resumeNote = "이 세션은 같은 도메인에서 같은 역할로 이전 티켓을 처리하던 세션이다. 이미 읽은 지식은 다시 읽지 말고 이번 티켓에 새로 필요한 것만 찾아라."
+    public static let resumeNote = "이 세션은 이 티켓에서 같은 역할로 앞 차례를 처리하던 세션이다. 이미 읽은 지식·코드는 다시 읽지 말고 이번 차례에 새로 필요한 것만 찾아라."
 
     public static func prompt(role: PipelineRole, state s: PipelineState, config: PipelineConfig, resumed: Bool, diffFile: String?) -> String {
         var parts: [String] = []
         parts.append("이번 건: \(s.key) · 역할: \(role.label) (\(PipelineRole.sessionKey(domain: s.domain, role: role)))")
-        if resumed { parts.append(resumeNote) }
+        if resumed {
+            parts.append(resumeNote)
+        } else if let handoff = Handoffs.block(s.handoffs, role: role.rawValue) {
+            parts.append(handoff)
+        }
         parts.append(s.event)
         let knowledge = config.domains.knowledgeText(for: s.domain, home: config.home)
         if !config.common.isEmpty { parts.append("## 공통 지시\n" + config.common.replacingOccurrences(of: DomainMap.placeholder, with: knowledge)) }
@@ -574,6 +627,9 @@ public enum JiraPipeline {
             _ = await io.helper(["jira-state", "--key", s.key, "--type", "기타", "--result", "멈춤: \(why)"])
             await io.save(s)
         }
+        if s.stage == .done || s.stage == .stopped {
+            await io.archiveCase(s.key, PipelineRole.allCases.map { PipelineRole.sessionKey(domain: s.domain, role: $0) })
+        }
         return s
     }
 
@@ -629,7 +685,6 @@ public enum JiraPipeline {
             diffFile = file.path
         }
         let sessionKey = PipelineRole.sessionKey(domain: s.domain, role: role)
-        let known = await io.sessionId(sessionKey)
         var access = PipelineAccess.access(for: role, worktree: s.worktree, table: config.access)
         access.dirs += (config.domains.knowledgePaths(for: s.domain, home: config.home) + [config.notes.root]).filter { !access.dirs.contains($0) }
         let interrupted = s.inflight?.role == role.rawValue ? s.inflight : nil
@@ -650,6 +705,9 @@ public enum JiraPipeline {
                 usedId = fresh
             }
         } else {
+            let decision = io.policy().decide(caseKey: s.caseKey, role: role.rawValue, previous: s.previousSession(for: role), now: now())
+            let known = decision.resumeId
+            await io.sessionChosen(sessionKey, s.caseKey, known, decision.reason)
             let fresh = known == nil ? UUID().uuidString.lowercased() : nil
             usedId = known ?? fresh ?? ""
             s.inflight = PipelineState.Inflight(role: role.rawValue, sessionId: usedId, startedAt: now())
@@ -659,14 +717,19 @@ public enum JiraPipeline {
         }
         if result.interrupted { return false }
         s.inflight = nil
-        if let id = result.sessionId ?? (usedId.isEmpty ? nil : usedId), !id.isEmpty { await io.recordSession(sessionKey, id, s.key, result.usage) }
+        if let id = result.sessionId ?? (usedId.isEmpty ? nil : usedId), !id.isEmpty {
+            s.recordSession(role: role, id: id, usage: result.usage, now: now())
+            await io.recordSession(sessionKey, id, s.key, result.usage)
+        }
         s.costs[role.rawValue, default: 0] += result.usage?.costUSD ?? 0
         guard result.failure == nil, let answer = result.text else {
             _ = s.stop("\(role.label) 실행 실패: \(result.failure ?? "답 없음")", now: now())
             return true
         }
         let testerBefore = s.testerBacks, reviewerBefore = s.reviewerBacks
-        _ = s.apply(role: role, next: PipelineNext.extract(from: answer), summary: answer, now: now())
+        let next = PipelineNext.extract(from: answer)
+        _ = s.apply(role: role, next: next, summary: answer, now: now())
+        s.addHandoff(role: role, note: next?.note ?? "", answer: answer, now: now())
         if s.testerBacks > testerBefore || s.reviewerBacks > reviewerBefore {
             await bounceNotice(s, io: io, tester: s.testerBacks > testerBefore)
         }

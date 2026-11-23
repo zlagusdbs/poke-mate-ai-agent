@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>PokeMate.CoreChecks</RootNamespace>
+    <!-- apphost exe 를 만들지 않는다: 보안 프로그램이 복사·실행되는 검사용 exe 를 막아서, 하위 프로세스도 dotnet + dll 로 부른다 -->
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PokeMate.Core\PokeMate.Core.csproj" />
+  </ItemGroup>
+
+</Project>

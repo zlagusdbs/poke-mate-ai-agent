@@ -631,6 +631,12 @@ do {
     let auth = #"{"is_error":true,"result":"Failed to authenticate: OAuth session expired","session_id":"x"}"#
     check(ClaudeResponse.parse(stdout: Data(auth.utf8), exitCode: 1) == .failure(.notLoggedIn), "parse: 로그인 만료 JSON")
     check(ClaudeResponse.parse(stdout: Data("Please run /login".utf8), exitCode: 1) == .failure(.notLoggedIn), "parse: JSON 아닌 로그인 안내")
+    check(ClaudeFailure.startsLogin(.notLoggedIn, interactive: true) && !ClaudeFailure.startsLogin(.notLoggedIn, interactive: false)
+          && !ClaudeFailure.startsLogin(.timeout, interactive: true),
+          "login: 로그인은 사용자가 보낸 채팅·작업 질문에서만 시작 (알림·자동화 실행은 시작 안 함)")
+    check(ClaudeFailure.notLoggedIn.backgroundMessage == ClaudeFailure.backgroundLoginMessage && !ClaudeFailure.backgroundLoginMessage.contains("브라우저")
+          && ClaudeFailure.timeout.backgroundMessage == ClaudeFailure.timeout.message,
+          "login: 알림 실행의 로그인 필요 문구는 브라우저를 띄운다고 하지 않음")
     if case .failure(.malformed) = ClaudeResponse.parse(stdout: Data("segfault".utf8), exitCode: 139) { check(true, "") }
     else { check(false, "parse: 알 수 없는 출력은 malformed") }
 }
@@ -1064,7 +1070,13 @@ actor PipelineScript {
     var runs: [(String?, String?)] = []
     var notices: [String] = []
     var failResume = false
+    /// 끝난 건 보관 요청 (티켓, 역할 세션 키들)
+    var archived: [(String, [String])] = []
+    /// 역할마다 고른 세션 (세션 키, 건 키, 이어 쓸 id, 새로 시작하는 이유)
+    var chosen: [(String, String, String?, String?)] = []
     func noticed(_ title: String) { notices.append(title) }
+    func archive(_ ticket: String, _ keys: [String]) { archived.append((ticket, keys)) }
+    func choose(_ key: String, _ caseKey: String, _ resume: String?, _ reason: String?) { chosen.append((key, caseKey, resume, reason)) }
     func setFailResume() { failResume = true }
     func answer(_ role: PipelineRole, _ prompt: String, _ access: ClaudeCommand.WriteAccess, resume: String?, fresh: String?) -> PipelineRoleResult {
         runs.append((resume, fresh))
@@ -1082,7 +1094,6 @@ actor PipelineScript {
         return (true, "ok")
     }
     func record(_ key: String, _ id: String) { sessions[key] = id }
-    func session(_ key: String) -> String? { sessions[key] }
     func setFailPush() { failPush = true }
 }
 
@@ -1090,14 +1101,16 @@ func nextBlock(_ next: String, _ extra: String = "") -> String {
     "답 본문\n```pokemate-next\n{\"next\": \"\(next)\", \"note\": \"\(next) 로 넘김\"\(extra)}\n```"
 }
 
-func pipelineIO(_ script: PipelineScript) -> PipelineIO {
+func pipelineIO(_ script: PipelineScript, policy: SessionPolicy? = nil) -> PipelineIO {
     PipelineIO(runRole: { role, prompt, resume, fresh, access in await script.answer(role, prompt, access, resume: resume, fresh: fresh) },
                helper: { args in await script.helper(args) },
                diff: { _ in "diff --git a/x b/x" },
-               sessionId: { key in await script.session(key) },
                recordSession: { key, id, _, _ in await script.record(key, id) },
                save: { _ in },
-               notice: { title, _ in await script.noticed(title) })
+               notice: { title, _ in await script.noticed(title) },
+               policy: { policy ?? SessionPolicy() },
+               sessionChosen: { key, caseKey, resume, reason in await script.choose(key, caseKey, resume, reason) },
+               archiveCase: { ticket, keys in await script.archive(ticket, keys) })
 }
 
 do {
@@ -1182,6 +1195,119 @@ do {
           && prompts[5].1.contains(JiraPipeline.resumeNote) && !prompts[0].1.contains(JiraPipeline.resumeNote) && abs(done.totalCost - 6.0) < 0.001,
           "pipeline: 역할 세션은 {도메인}:{역할} 로 기록·이어 쓰기, 역할별 비용 합산")
 
+    // 티켓별 역할 세션: 같은 티켓 안에서만 이어 쓰고, 다른 티켓은 같은 도메인이어도 새로 시작
+    check(done.sessions?.count == 4 && done.sessions?["dev"]?.id == "s-dev" && done.sessions?["pm"]?.contextTokens == 0
+          && Set(done.sessions?.keys.map { $0 } ?? []) == ["pm", "dev", "tester", "reviewer"] && start.sessions == nil,
+          "ticket-session: 티켓 상태에 역할별 세션(id·마지막 사용·문맥 토큰)이 기록됨")
+    let reviewerRuns = zip(prompts.map(\.0), storyRuns).filter { $0.0 == .reviewer }.map(\.1)
+    check(reviewerRuns.count == 2 && reviewerRuns[0].0 == nil && reviewerRuns[0].1 != nil && reviewerRuns[1].0 == "s-reviewer"
+          && storyRuns[4].0 == "s-tester" && storyRuns[3].0 == "s-dev",
+          "session-policy: 같은 티켓 안에서는 리뷰어도 다른 역할과 같은 규칙으로 --resume (리뷰어 예외 없음)")
+    let storyArchived = await story.archived
+    check(storyArchived.count == 1 && storyArchived[0].0 == "ACME-1" && storyArchived[0].1 == ["acme:pm", "acme:dev", "acme:tester", "acme:reviewer"],
+          "session-policy: 티켓이 끝나면(done) 그 건의 역할 세션 보관을 한 번 요청")
+    let chosenStory = await story.chosen
+    check(chosenStory.allSatisfy { $0.1 == "jira:ACME-1" } && chosenStory[0].0 == "acme:pm" && chosenStory[0].2 == nil && chosenStory[0].3 == nil
+          && chosenStory.filter { $0.2 != nil }.count == 8,
+          "session-policy: 고른 결과는 건 키 jira:{KEY} 로 알림 (처음은 이유 없음)")
+    let storyHandoffs = done.handoffs ?? []
+    check(storyHandoffs.count == 12 && storyHandoffs[0].role == "pm" && storyHandoffs[0].summary.hasPrefix("dev 로 넘김")
+          && storyHandoffs.filter { $0.role != "reviewer" }.allSatisfy { $0.findings == nil } && storyHandoffs.filter { $0.role == "reviewer" }.allSatisfy { $0.findings != nil },
+          "handoff: 역할이 한 차례를 마칠 때마다 인계 메모 {role, at, summary} (리뷰어만 findings)")
+    let withBlock = prompts.indices.map { (prompts[$0].1.contains(Handoffs.title), storyRuns[$0].0 == nil) }
+    check(!withBlock[0].0 && withBlock.dropFirst().allSatisfy { $0.0 == $0.1 } && prompts[1].1.contains("- PM: dev 로 넘김") && withBlock.filter { $0.0 }.count == 3,
+          "handoff: 인계 블록은 앞 차례가 있는 건의 새 세션에만 (처음 시작·이어 쓰는 세션에는 없음)")
+    func resumed(_ from: PipelineState, at stage: PipelineState.Stage) -> PipelineState {
+        var c = from
+        c.stage = stage
+        c.worktree = "/tmp/acme-ws/.jira-auto-worktrees/ACME-1"
+        c.repo = "acme-sample-service"
+        c.mustStop = false
+        return c
+    }
+    var second = PipelineState(key: "ACME-2", title: "other ticket", event: "e", domain: "acme", repo: "acme-sample-service", timeoutMinutes: 30, now: Date())
+    second.stage = .dev
+    second.worktree = "/tmp/acme-ws/.jira-auto-worktrees/ACME-1"
+    let otherScript = PipelineScript([.dev: [nextBlock("tester")], .tester: [nextBlock("pm")], .pm: [nextBlock("stop")]])
+    let otherDone = await JiraPipeline.run(second, io: pipelineIO(otherScript), config: config)
+    let otherRuns = await otherScript.runs
+    check(otherDone.stage == .done && otherRuns.count == 3 && otherRuns.allSatisfy { $0.0 == nil && $0.1 != nil },
+          "ticket-session: 같은 도메인의 다른 티켓은 역할 세션을 새로 시작 (--session-id)")
+    let againScript = PipelineScript([.dev: [nextBlock("pm")], .pm: [nextBlock("stop")]])
+    let againDone = await JiraPipeline.run(resumed(otherDone, at: .dev), io: pipelineIO(againScript), config: config)
+    let againRuns = await againScript.runs
+    check(againDone.stage == .done && againRuns.map(\.0) == ["s-dev", "s-pm"] && againRuns.allSatisfy { $0.1 == nil },
+          "ticket-session: 같은 티켓의 다음 실행(55분 안)은 그 티켓 세션을 이어 씀")
+    var stale = resumed(otherDone, at: .dev)
+    stale.sessions?["dev"]?.lastUsed = Date().addingTimeInterval(-61 * 60)
+    stale.sessions?["pm"]?.contextTokens = 130_000
+    let staleScript = PipelineScript([.dev: [nextBlock("pm")], .pm: [nextBlock("stop")]])
+    let staleDone = await JiraPipeline.run(stale, io: pipelineIO(staleScript), config: config)
+    let staleRuns = await staleScript.runs
+    check(staleRuns.count == 2 && staleRuns.allSatisfy { $0.0 == nil && $0.1 != nil } && staleDone.sessions?["dev"]?.id == "s-dev",
+          "ticket-session: 같은 티켓이라도 55분이 지나거나 문맥이 12만 토큰 이상이면 새로 시작")
+    let alwaysScript = PipelineScript([.dev: [nextBlock("pm")], .pm: [nextBlock("stop")]])
+    _ = await JiraPipeline.run(stale, io: pipelineIO(alwaysScript, policy: .always), config: config)
+    let alwaysRuns = await alwaysScript.runs
+    check(alwaysRuns.map(\.0) == ["s-dev", "s-pm"], "ticket-session: 분·토큰 기준을 0(끔)으로 두면 같은 티켓 안에서는 늘 이어 씀")
+    let nowT = Date()
+    let pol = SessionPolicy()
+    check(PipelineState(key: "ACME-3", title: "t", event: "e", domain: "acme", repo: nil, timeoutMinutes: 30, now: nowT).previousSession(for: .dev) == nil
+          && pol.decide(caseKey: "jira:ACME-2", role: "dev", previous: stale.previousSession(for: .dev), now: nowT).reason?.hasPrefix("식음 6") == true
+          && pol.decide(caseKey: "jira:ACME-2", role: "pm", previous: stale.previousSession(for: .pm), now: nowT).reason == "문맥 130.0K (기준 120.0K)"
+          && otherDone.previousSession(for: .reviewer) == nil && otherDone.previousSession(for: .dev)?.caseKey == "jira:ACME-2" && otherDone.previousSession(for: .dev)?.id == "s-dev",
+          "session-policy: 티켓 세션은 진행 파일 sessions 에서 — 없으면 nil, 기준에 걸리면 이유")
+    var rv = resumed(otherDone, at: .reviewer)
+    rv.recordSession(role: .reviewer, id: "s-r", usage: nil, now: nowT)
+    check(pol.decide(caseKey: rv.caseKey, role: "reviewer", previous: rv.previousSession(for: .reviewer), now: nowT) == SessionPolicy.Decision(resumeId: "s-r", reason: nil),
+          "session-policy: 리뷰어도 같은 건 안에서는 이어 씀 (늘 새로 설정 없음)")
+
+    // 새 세션이면 그 건의 인계 메모를 "이번 건 인계" 블록으로 (리뷰어는 자기 이전 지적도)
+    var handed = resumed(otherDone, at: .reviewer)
+    handed.addHandoff(role: .reviewer, note: "결함:\n- pricing.py:3 음수 가격 검사 없음\n미확인(질문):\n- 할인 상한 확인", answer: "판정: 댓글", now: nowT)
+    handed.addHandoff(role: .dev, note: "음수 가격 검사를 더했다", answer: "답 본문", now: nowT)
+    handed.sessions?["reviewer"] = PipelineSession(id: "s-old", lastUsed: nowT.addingTimeInterval(-90 * 60), contextTokens: 1000)
+    let handScript = PipelineScript([.reviewer: [nextBlock("push")], .pm: [nextBlock("stop")]])
+    _ = await JiraPipeline.run(handed, io: pipelineIO(handScript), config: config)
+    let handPrompts = await handScript.prompts
+    let handRuns = await handScript.runs
+    let handChosen = await handScript.chosen
+    let handPrompt = handPrompts[0].1
+    check(handRuns[0].0 == nil && handChosen[0].3?.hasPrefix("식음 ") == true
+          && handPrompt.contains(Handoffs.title) && handPrompt.contains("- 개발: 음수 가격 검사를 더했다") && handPrompt.contains(Handoffs.findingsTitle)
+          && handPrompt.contains("- 결함: pricing.py:3 음수 가격 검사 없음") && handPrompt.contains("- 미확인: 할인 상한 확인")
+          && (handPrompt.range(of: Handoffs.title)?.lowerBound ?? handPrompt.endIndex) < (handPrompt.range(of: "## 역할 지시")?.lowerBound ?? handPrompt.startIndex)
+          && !handPrompt.contains(JiraPipeline.resumeNote),
+          "handoff: 같은 티켓을 시간 초과 뒤 새로 시작하면 역할 프롬프트 앞에 인계 블록과 리뷰어 자신의 이전 지적")
+    check(!handPrompts[1].1.contains(Handoffs.title) && handRuns[1].0 == "s-pm", "handoff: 같은 실행에서 이어 쓰는 세션(PM)에는 블록 없음")
+
+    // 작업 탭 기록 {도메인}:{역할}: 다른 티켓이 새로 시작하면 앞 세션은 보관하고 "새 티켓 (앞: KEY)"
+    var tab = WorkSessionBook()
+    let tt = Date()
+    tab.record(repo: "acme:dev", sessionId: "s-a", key: "ACME-100", usage: RunUsage(costUSD: 1), now: tt)
+    let noChange = tab.startFresh(repo: "acme:pm", caseKey: "jira:ACME-100", reason: nil, now: tt)
+    let changed = tab.startFresh(repo: "acme:dev", caseKey: "jira:ACME-101", reason: nil, now: tt)
+    check(!noChange && changed && tab.sessions["acme:dev"]?.id == "" && tab.sessions["acme:dev"]?.freshReason == "새 티켓 (앞: ACME-100)" && tab.archived.map(\.id) == ["s-a"],
+          "ticket-session: 작업 탭 기록은 새 티켓이면 앞 세션 보관 + 이유 '새 티켓 (앞: KEY)'")
+    tab.record(repo: "acme:dev", sessionId: "s-b", key: "ACME-101", usage: nil, now: tt)
+    let sameTicket = tab.startFresh(repo: "acme:dev", caseKey: "jira:ACME-101", reason: "식음 61분 (기준 55분)", now: tt)
+    check(sameTicket && tab.sessions["acme:dev"]?.freshReason == "식음 61분 (기준 55분)" && tab.archived.count == 2,
+          "ticket-session: 같은 티켓이 기준에 걸리면 그 이유 그대로 (기존 문구)")
+
+    // sessions 가 없는 옛 진행 파일도 읽고, 있으면 왕복 (JSON 모양은 윈도우와 같음)
+    let sessionDir = FileManager.default.temporaryDirectory.appendingPathComponent("pm-ticket-sessions-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+    let oldJSON = #"{"costs":{},"create":[],"createdAt":"2026-11-17T08:00:00Z","domain":"acme","event":"e","history":[],"key":"ACME-9","mustStop":false,"note":"","reviewerBacks":0,"stage":"dev","summary":"","testerBacks":0,"testsPassed":false,"timeoutMinutes":30,"title":"t","updatedAt":"2026-11-17T08:00:00Z"}"#
+    try? oldJSON.write(to: sessionDir.appendingPathComponent("ACME-9.json"), atomically: true, encoding: .utf8)
+    let oldState = PipelineState.load(key: "ACME-9", in: sessionDir)
+    otherDone.save(in: sessionDir)
+    let withSessions = (try? String(contentsOf: sessionDir.appendingPathComponent("ACME-2.json"), encoding: .utf8)) ?? ""
+    let sessionBack = PipelineState.load(key: "ACME-2", in: sessionDir)
+    check(oldState?.stage == .dev && oldState?.sessions == nil && withSessions.contains("\"sessions\" : {") && withSessions.contains("\"contextTokens\"") && withSessions.contains("\"lastUsed\" : \"")
+          && sessionBack?.sessions?["dev"]?.id == "s-dev",
+          "ticket-session: sessions 가 없는 옛 진행 파일도 읽고, sessions {역할: {id, lastUsed, contextTokens}} 저장·읽기")
+    try? FileManager.default.removeItem(at: sessionDir)
+
     let limit = PipelineScript([
         .pm: [pmDev, nextBlock("stop", #", "waiting": true"#)],
         .dev: [nextBlock("tester"), nextBlock("tester"), nextBlock("tester")],
@@ -1248,7 +1374,7 @@ do {
     check(lost.stage == .done && lostRuns.count == 3 && lostRuns[0].0 == "s-cut" && lostRuns[1].0 == nil && lostRuns[1].1 != nil
           && lostPrompts.first?.1.hasPrefix(JiraPipeline.interruptedNote) == true, "pipeline: 끊긴 세션이 없으면 새 세션으로, 이미 한 일 확인 지시와 함께")
     let quitIO = PipelineIO(runRole: { _, _, _, _, _ in PipelineRoleResult(interrupted: true) },
-                            helper: { _ in (true, "") }, diff: { _ in "" }, sessionId: { _ in nil }, recordSession: { _, _, _, _ in }, save: { _ in })
+                            helper: { _ in (true, "") }, diff: { _ in "" }, recordSession: { _, _, _, _ in }, save: { _ in })
     let quit = await JiraPipeline.run(cut, io: quitIO, config: config)
     check(quit.stage == .dev && quit.inflight?.role == "dev" && quit.reason == nil, "pipeline: 앱 종료로 끊기면 멈춤 처리 없이 실행 중 기록을 남김")
     let fresh = ClaudeCommand.arguments(sessionId: nil, mcpConfigPath: "/c.json", systemPrompt: "s", newSessionId: "abc")
@@ -1443,8 +1569,16 @@ do {
     let first = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, notes: empty, helper: "H", context: "본문")
     let again = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .learned, firstRun: false, notes: notes, helper: "H", context: "본문")
     let unsure = DomainReview.reviewPrompt(target: other, domain: "default", why: "못 정함", source: .chosen, firstRun: true, notes: notes, helper: "H", context: "본문")
+    let handedReview = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, notes: notes, helper: "H", context: "본문",
+                                                 handoff: "## 이번 건 인계\n- 리뷰어: 앞 리뷰")
+    let resumedWithBlock = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: false, notes: notes, helper: "H", context: "본문",
+                                                     handoff: "## 이번 건 인계\n- 리뷰어: 앞 리뷰")
+    check(handedReview.contains("## 이번 건 인계\n- 리뷰어: 앞 리뷰")
+          && (handedReview.range(of: "## 이번 건 인계")?.lowerBound ?? handedReview.endIndex) < (handedReview.range(of: "도메인 노트")?.lowerBound ?? handedReview.startIndex)
+          && !resumedWithBlock.contains("## 이번 건 인계") && !first.contains("## 이번 건 인계"),
+          "review: 새 세션이면 인계 블록을 안내 앞쪽에, 이어 쓰는 세션·처음에는 없음")
     check(DomainReview.sessionKey("acme") == "acme:reviewer"
-          && first.contains("세션 acme:reviewer") && first.contains("첫 실행") && first.contains("H domain-note --domain acme --init") && first.hasSuffix("본문")
+          && first.contains("세션 acme:reviewer") && first.contains("PR 마다 따로") && first.contains("새 세션이니") && first.contains("H domain-note --domain acme --init") && first.hasSuffix("본문")
           && first.contains("`/n/acme/checklist.md` (없음)")
           && again.contains("새로 필요한 것만") && again.contains("`/n/acme/checklist.md` (20줄)") && again.contains("`/n/acme/notes.md` (12줄)")
           && !again.contains("--init") && again.contains("H gh-file --repo acme/sample-web")
@@ -1452,7 +1586,7 @@ do {
           && unsure.contains("도메인 미정, 점검표 없음") && !unsure.contains("domain-note")
           && !notes.promptLines(domain: "acme", helper: "H", source: "ACME-1", canWrite: false).contains("domain-note")
           && notes.promptLines(domain: "acme", helper: "H", source: "ACME-1", canWrite: false).contains("읽기만"),
-          "review: 리뷰어 세션 안내 (첫 실행·이어 쓰기·공유 노트·init·gh-file·domain-note·default)")
+          "review: 리뷰어 세션 안내 (새 세션·이어 쓰기·공유 노트·init·gh-file·domain-note·default)")
     let rows = Data(#"[{"kind":"settings","id":"automation","domainNotesDir":"~/kb/notes"},{"id":"jira"}]"#.utf8)
     check(DomainNotes.root(fromConnections: rows, home: "/u") == "/u/kb/notes" && DomainNotes.root(fromConnections: nil, home: "/u") == "/u/.claude/references/notes"
           && DomainNotes.root(fromConnections: Data(#"[{"kind":"settings","id":"automation","domainNotesDir":" "}]"#.utf8), home: "/u") == "/u/.claude/references/notes",
@@ -1527,63 +1661,197 @@ do {
           && ["/ws", "/refs", "/n", "/w/W"].allSatisfy(raccess.dirs.contains), "eval: 가상 레포 리뷰어는 읽기·스킬만, 쓰기 없음")
 }
 
+// MARK: 자동 처리 세션 규칙 하나 (SessionPolicy) · 인계 메모 · PR 작업 건 파일 · 끝난 건 보관
 do {
     let t0 = Date(timeIntervalSince1970: 1_800_000_000)
-    var rbook = WorkSessionBook()
-    rbook.record(repo: "acme:reviewer", sessionId: "s1", key: "ACME-1", usage: nil, now: t0)
-    rbook.sessions["acme:reviewer"]?.contextTokens = 90_000
-    let policy = SessionReuse()
+    func minutes(_ m: Double) -> Date { t0.addingTimeInterval(m * 60) }
+    let policy = SessionPolicy()
     check(policy.idleMinutes == 55 && policy.maxTokens == 120_000, "reuse: 기본 55분·120k")
-    check(rbook.reuseId("acme:reviewer", policy: SessionReuse(freshReviewer: false), now: t0.addingTimeInterval(54 * 60)) == "s1" && rbook.archived.isEmpty,
-          "reuse: 55분 안·문맥 상한 아래면 이어 씀")
+
+    // 같은 건 이어 쓰기 / 다른 건 새로 / 같은 건 시간·문맥 초과 새로
+    let warm = SessionPolicy.Previous(caseKey: "jira:ACME-1", id: "s1", lastUsed: t0, contextTokens: 90_000)
+    var bigWarm = warm
+    bigWarm.contextTokens = 130_000
+    var prWarm = warm
+    prWarm.caseKey = "pr:acme/sample-web#7"
+    var hugeWarm = warm
+    hugeWarm.contextTokens = 900_000
+    var noId = warm
+    noId.id = ""
+    check(policy.decide(caseKey: "jira:ACME-1", role: "dev", previous: warm, now: minutes(54)) == SessionPolicy.Decision(resumeId: "s1", reason: nil),
+          "session-policy: 같은 건, 55분 안·문맥 상한 아래면 이어 씀")
+    check(policy.decide(caseKey: "jira:ACME-2", role: "dev", previous: warm, now: minutes(1)) == SessionPolicy.Decision(resumeId: nil, reason: "새 티켓 (앞: ACME-1)")
+          && SessionPolicy.always.decide(caseKey: "jira:ACME-2", role: "dev", previous: warm, now: minutes(1)).resumeId == nil,
+          "session-policy: 다른 건의 세션은 어떤 설정(0 포함)에서도 이어 쓰지 않음, 이유 '새 티켓 (앞: KEY)'")
+    check(policy.decide(caseKey: "jira:ACME-1", role: "dev", previous: warm, now: minutes(61)) == SessionPolicy.Decision(resumeId: nil, reason: "식음 61분 (기준 55분)")
+          && policy.decide(caseKey: "jira:ACME-1", role: "dev", previous: bigWarm, now: minutes(1)) == SessionPolicy.Decision(resumeId: nil, reason: "문맥 130.0K (기준 120.0K)"),
+          "session-policy: 같은 건이라도 시간·문맥 초과면 새로 (기존 문구)")
+    check(["pm", "dev", "tester", "reviewer"].allSatisfy { policy.decide(caseKey: "jira:ACME-1", role: $0, previous: warm, now: minutes(10)).resumeId == "s1" }
+          && policy.decide(caseKey: "pr:acme/sample-web#7", role: "reviewer", previous: prWarm, now: minutes(10)).resumeId == "s1",
+          "session-policy: 리뷰어도 같은 규칙 (역할별 예외 없음)")
+    check(SessionPolicy.always.decide(caseKey: "jira:ACME-1", role: "dev", previous: hugeWarm, now: minutes(9 * 60)).resumeId == "s1"
+          && SessionPolicy(idleMinutes: 0, maxTokens: 120_000).decide(caseKey: "jira:ACME-1", role: "dev", previous: warm, now: minutes(9 * 60)).resumeId == "s1"
+          && SessionPolicy(idleMinutes: 30, maxTokens: 0).decide(caseKey: "jira:ACME-1", role: "dev", previous: hugeWarm, now: minutes(10)).resumeId == "s1",
+          "session-policy: 0 이면 그 기준은 끔 (둘 다 0 이면 같은 건 안에서는 늘 이어 쓰기)")
+    check(policy.decide(caseKey: "jira:ACME-1", role: "dev", previous: nil, now: t0) == SessionPolicy.Decision(resumeId: nil, reason: nil)
+          && policy.decide(caseKey: "jira:ACME-1", role: "dev", previous: noId, now: t0) == SessionPolicy.Decision(resumeId: nil, reason: nil),
+          "session-policy: 이전 세션이 없으면 처음 (이유 없음)")
+
+    // 건 키
+    check(SessionPolicy.jiraKey("ACME-101") == "jira:ACME-101" && SessionPolicy.prKey(owner: "acme", repo: "sample-web", number: 12) == "pr:acme/sample-web#12"
+          && SessionPolicy.label("jira:ACME-101") == "ACME-101" && SessionPolicy.label("pr:acme/sample-web#12") == "sample-web#12" && SessionPolicy.label("ACME-9") == "ACME-9",
+          "session-policy: 건 키 jira:{KEY}·pr:{owner}/{repo}#{n} 와 짧은 이름")
+    check(SessionPolicy.sameCase("ACME-1", "jira:ACME-1") && SessionPolicy.sameCase("sample-web#12", "pr:acme/sample-web#12")
+          && !SessionPolicy.sameCase("jira:ACME-1", "pr:acme/ACME-1#1") && !SessionPolicy.sameCase("pr:a/x#1", "pr:b/x#1"),
+          "session-policy: 작업 탭 기록의 짧은 이름과도 같은 건인지 비교")
+    let target = ReviewTarget.parse(url: "https://github.example.com/acme/sample-web/pull/12")!
+    check(ReviewCase(target: target, domain: "acme", now: t0).key == "pr:acme/sample-web#12" && ReviewCase.fileName(target) == "acme__sample-web__12.json"
+          && policy.decide(caseKey: "pr:acme/sample-web#12", role: "reviewer", previous: SessionPolicy.Previous(caseKey: "sample-web#9", id: "r9", lastUsed: t0, contextTokens: 0), now: t0).reason == "새 PR (앞: sample-web#9)",
+          "session-policy: PR 키·파일 이름, 다른 PR 이면 '새 PR (앞: repo#n)'")
+
+    // 레포 작업 세션 (알림 자동 처리의 레포 세션): 레포가 한 건, 시간·문맥만
+    var rbook = WorkSessionBook()
+    rbook.record(repo: "sample-api", sessionId: "r1", key: "ACME-2", usage: nil, now: t0)
+    var warmBook = rbook
     var idle = rbook
-    check(idle.reuseId("acme:reviewer", policy: SessionReuse(freshReviewer: false), now: t0.addingTimeInterval(61 * 60)) == nil
-          && idle.sessions["acme:reviewer"]?.id == "" && idle.sessions["acme:reviewer"]?.freshReason == "식음 61분 (기준 55분)"
-          && idle.archived.map(\.id) == ["s1"], "reuse: 55분 넘게 쉬면 새 세션, 옛 세션은 보관, 이유 남김")
-    idle.record(repo: "acme:reviewer", sessionId: "s2", key: "ACME-2", usage: nil, now: t0.addingTimeInterval(62 * 60))
-    check(idle.sessions["acme:reviewer"]?.id == "s2" && idle.sessions["acme:reviewer"]?.freshReason == "식음 61분 (기준 55분)"
-          && idle.sessions["acme:reviewer"]?.keys == ["ACME-2"] && idle.archived.count == 1, "reuse: 새 세션 기록에 이유가 이어짐")
-    var big = rbook
-    big.sessions["acme:reviewer"]?.contextTokens = 130_000
-    check(big.reuseId("acme:reviewer", policy: SessionReuse(freshReviewer: false), now: t0.addingTimeInterval(60)) == nil
-          && big.sessions["acme:reviewer"]?.freshReason?.hasPrefix("문맥 ") == true, "reuse: 문맥이 상한 이상이면 새 세션")
-    var rev = rbook
-    check(rev.reuseId("acme:reviewer", policy: SessionReuse(), now: t0.addingTimeInterval(60)) == nil
-          && rev.sessions["acme:reviewer"]?.freshReason == "리뷰어는 늘 새로" && rev.archived.map(\.id) == ["s1"],
-          "reuse: 리뷰어 세션은 기본으로 늘 새로 (옛 세션 보관, 이유 남김)")
-    var pmBook = WorkSessionBook()
-    pmBook.record(repo: "acme:pm", sessionId: "p1", key: "ACME-1", usage: nil, now: t0)
-    pmBook.record(repo: "sample-api", sessionId: "r1", key: "ACME-2", usage: nil, now: t0)
-    check(pmBook.reuseId("acme:pm", policy: SessionReuse(), now: t0.addingTimeInterval(60)) == "p1"
-          && pmBook.reuseId("sample-api", policy: SessionReuse(), now: t0.addingTimeInterval(60)) == "r1",
-          "reuse: PM·개발·테스터·레포 세션은 시간·문맥 기준 그대로")
-    var revOff = rbook
-    check(revOff.reuseId("acme:reviewer", policy: SessionReuse(freshReviewer: false), now: t0.addingTimeInterval(60)) == "s1",
-          "reuse: 토글을 끄면 리뷰어도 같은 기준")
-    var keep = rbook
-    keep.sessions["acme:reviewer"]?.contextTokens = 130_000
-    check(keep.reuseId("acme:reviewer", policy: .always, now: t0.addingTimeInterval(9 * 3600)) == "s1"
-          && SessionReuse(idleMinutes: 0, maxTokens: 120_000, freshReviewer: false).freshReason(for: rbook.sessions["acme:reviewer"]!, now: t0.addingTimeInterval(9 * 3600)) == nil,
-          "reuse: 0 이면 그 기준은 끔 (둘 다 0 이면 늘 이어 쓰기)")
+    check(warmBook.reuseId("sample-api", policy: policy, now: minutes(10)) == "r1"
+          && idle.reuseId("sample-api", policy: policy, now: minutes(61)) == nil && idle.sessions["sample-api"]?.id == "" && idle.sessions["sample-api"]?.freshReason == "식음 61분 (기준 55분)"
+          && idle.archived.map(\.id) == ["r1"], "reuse: 레포 세션은 시간·문맥 기준, 새로면 옛 세션 보관·이유 남김")
+    idle.record(repo: "sample-api", sessionId: "r2", key: "ACME-3", usage: nil, now: minutes(62))
+    check(idle.sessions["sample-api"]?.id == "r2" && idle.sessions["sample-api"]?.freshReason == "식음 61분 (기준 55분)", "reuse: 새 세션 기록에 이유가 이어짐")
     var empty = WorkSessionBook()
     check(empty.reuseId("nope", policy: policy, now: t0) == nil && empty.sessions.isEmpty, "reuse: 세션이 없으면 그대로 새로")
-    let oldSettings = try? JSONDecoder().decode(AppSettings.self, from: Data(#"{"repoDir": "/r"}"#.utf8))
+
+    // 예전 settings (reviewerAlwaysFresh 있음): 읽을 때 무시하고 다시 쓰지 않는다
+    let oldSettings = try? JSONDecoder().decode(AppSettings.self, from: Data(#"{"repoDir": "/r", "reviewerAlwaysFresh": false, "sessionReuseMinutes": 30}"#.utf8))
     let setSettings = try? JSONDecoder().decode(AppSettings.self, from: Data(#"{"sessionReuseMinutes": 0, "sessionReuseMaxTokens": -5}"#.utf8))
-    check(oldSettings?.sessionReuseMinutes == 55 && oldSettings?.sessionReuseMaxTokens == 120_000 && oldSettings?.reviewerAlwaysFresh == true
-          && setSettings.map { SessionReuse(settings: $0) } == SessionReuse(idleMinutes: 0, maxTokens: 0, freshReviewer: true), "reuse: 설정 기본값과 0(끔)")
-    check(ReviewEval.policy("always") == .always && ReviewEval.policy("default") == SessionReuse() && ReviewEval.policy("30,80000") == SessionReuse(idleMinutes: 30, maxTokens: 80_000)
+    let written = oldSettings.flatMap { try? JSONEncoder().encode($0) }.map { String(decoding: $0, as: UTF8.self) } ?? ""
+    check(oldSettings?.sessionReuseMinutes == 30 && oldSettings?.sessionReuseMaxTokens == 120_000 && !written.contains("reviewerAlwaysFresh")
+          && written.contains("\"sessionReuseMinutes\":30") && setSettings.map { SessionPolicy(settings: $0) } == SessionPolicy.always,
+          "settings: 예전 reviewerAlwaysFresh 는 무시·다시 쓰지 않음, 0(끔)·음수는 0")
+
+    // 평가 (--reuse): 앱과 같은 규칙 — 같은 건만 이어 쓰고 다른 건은 새로
+    check(ReviewEval.policy("always") == .always && ReviewEval.policy("default") == SessionPolicy() && ReviewEval.policy("30,80000") == SessionPolicy(idleMinutes: 30, maxTokens: 80_000)
           && ReviewEval.policy("x") == nil && ReviewEval.policy("-1,5") == nil && ReviewEval.newLines("a\nb\nc", after: 2) == "c",
           "eval: 세션 이어 쓰기 규칙 인자, 이번 실행에 생긴 기록만")
     var ebook = WorkSessionBook()
-    let et = Date(timeIntervalSince1970: 1_800_000_000)
-    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "bad", ok: false, caseId: "c1", usage: nil, transcript: nil, now: et)
-    check(ebook.sessions.isEmpty && ebook.reuseId("acme:reviewer", policy: .always, now: et) == nil, "eval: 실패한 실행은 세션을 기록하지 않음 (다음 문제는 새로)")
-    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "s1", ok: true, caseId: "c2", usage: nil,
-                             transcript: (RunUsage(input: 1, cacheRead: 95_000), 96_000), now: et)
-    check(ebook.sessions["acme:reviewer"]?.contextTokens == 96_000 && ebook.reuseId("acme:reviewer", policy: SessionReuse(freshReviewer: false), now: et.addingTimeInterval(60)) == "s1",
-          "eval: 성공한 실행은 기록하고 끝 문맥으로 다음 판단")
-    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "s1", ok: false, caseId: "c3", usage: nil, transcript: nil, now: et.addingTimeInterval(120))
-    check(ebook.sessions["acme:reviewer"]?.keys == ["c2"], "eval: 이어 쓰다 실패해도 기록을 바꾸지 않음")
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "bad", ok: false, caseId: "sample-web#1", usage: nil, transcript: nil, now: t0)
+    let noRecord = ebook.sessions.isEmpty
+    let afterFailure = ReviewEval.chooseSession(&ebook, slot: "acme:reviewer", caseKey: "pr:acme/sample-web#1", policy: .always, now: t0)
+    check(noRecord && afterFailure.resumeId == nil,
+          "eval: 실패한 실행은 세션을 기록하지 않음 (다음 문제는 새로)")
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "s1", ok: true, caseId: "sample-web#1", usage: nil,
+                             transcript: (RunUsage(input: 1, cacheRead: 95_000), 96_000), now: t0)
+    let sameCase = ReviewEval.chooseSession(&ebook, slot: "acme:reviewer", caseKey: "pr:acme/sample-web#1", policy: SessionPolicy(), now: t0.addingTimeInterval(60))
+    let otherCase = ReviewEval.chooseSession(&ebook, slot: "acme:reviewer", caseKey: "pr:acme/sample-web#2", policy: .always, now: t0.addingTimeInterval(90))
+    check(sameCase.resumeId == "s1" && otherCase == SessionPolicy.Decision(resumeId: nil, reason: "새 PR (앞: sample-web#1)")
+          && ebook.sessions["acme:reviewer"]?.freshReason == "새 PR (앞: sample-web#1)" && ebook.archived.map(\.id) == ["s1"],
+          "eval: 같은 PR 은 기준대로 이어 쓰고, 다른 PR 은 '늘 이어 쓰기' 에서도 새로")
+    ReviewEval.recordSession(&ebook, key: "acme:reviewer", sessionId: "s2", ok: false, caseId: "sample-web#2", usage: nil, transcript: nil, now: t0.addingTimeInterval(120))
+    check(ebook.sessions["acme:reviewer"]?.id == "", "eval: 실패하면 기록을 바꾸지 않음")
+
+    // 인계 메모
+    let doc = "확인한 범위: pricing.py\n**결함**: 2건\n- pricing.py:3 음수 가격 검사 없음\n  (근거: 3줄)\n1. tests 누락\n미확인(질문):\n- 할인 상한 정책\n버린 후보와 이유: 없음\n- 버린 것\n판정: 댓글"
+    check(Handoffs.findings(doc) == ["결함: pricing.py:3 음수 가격 검사 없음", "결함: tests 누락", "미확인: 할인 상한 정책"],
+          "handoff: 결과 문서의 결함·미확인 절에서 항목 제목만 (건수 줄·다른 절은 뺌)")
+    check(Handoffs.findings("결함: 없음\n미확인(질문): 없음\n판정: 승인").isEmpty
+          && Handoffs.findings("결함: pricing.py:9 0 나누기\n결함 없이 미확인만 있음") == ["결함: pricing.py:9 0 나누기"]
+          && Handoffs.findings("결함마다 파일:줄\n- 이건 아님").isEmpty,
+          "handoff: '없음'·머리말이 아닌 줄은 지적으로 치지 않음")
+    check(Handoffs.summary(note: "다음에 할 일", answer: "답 본문\n```pokemate-next\n{\"next\": \"pm\"}\n```") == "다음에 할 일\n답: 답 본문"
+          && Handoffs.summary(note: "", answer: "한 줄 답") == "한 줄 답" && Handoffs.summary(note: String(repeating: "가", count: 900), answer: "x").count == 600,
+          "handoff: 요약은 note 와 답 앞부분 (600자 안, 새로 묻지 않음)")
+    check(Handoffs.block(nil, role: "dev") == nil && Handoffs.block([], role: "dev") == nil, "handoff: 앞 차례가 없으면 블록 없음 (처음)")
+    let many = (1...12).map { i in CaseHandoff(role: i % 2 == 0 ? "dev" : "reviewer", at: minutes(Double(i)), summary: "메모 \(i)", findings: i % 2 == 0 ? nil : ["결함: 지적 \(i)"]) }
+    let block = Handoffs.block(many, role: "reviewer") ?? ""
+    check(block.hasPrefix(Handoffs.title + "\n" + Handoffs.intro) && !block.contains("메모 4\n") && !block.contains("- 리뷰어: 메모 3")
+          && block.contains("- 개발: 메모 6") && (block.range(of: "메모 5")?.lowerBound ?? block.endIndex) < (block.range(of: "메모 12")?.lowerBound ?? block.startIndex)
+          && block.contains(Handoffs.findingsTitle + "\n- 결함: 지적 11") && !block.contains("지적 9"),
+          "handoff: 최근 8개(오래된 것부터), 리뷰어에게는 자신의 마지막 지적")
+    check(!(Handoffs.block(many, role: "dev") ?? "").contains(Handoffs.findingsTitle), "handoff: 리뷰어가 아니면 지적 절 없음")
+    let syllables = Array("가각갂갃간갅갆갇갈")
+    func syllable(_ i: Int) -> String { String(syllables[i]) }
+    let big = (1...8).map { i in CaseHandoff(role: "pm", at: t0, summary: String(repeating: syllable(i), count: 590)) }
+    let capped = Handoffs.block(big, role: "pm") ?? ""
+    let huge = Handoffs.block([CaseHandoff(role: "pm", at: t0, summary: String(repeating: "나", count: 5000))], role: "pm") ?? ""
+    check(capped.count <= Handoffs.maxChars && capped.contains(String(repeating: syllable(8), count: 590)) && !capped.contains(String(repeating: syllable(1), count: 590))
+          && huge.count == Handoffs.maxChars && huge.hasSuffix("…"),
+          "handoff: 블록 전체 4,000자 안 (넘치면 오래된 메모부터 빼고, 하나로도 넘치면 자름)")
+    var list = Handoffs.append(nil, CaseHandoff(role: "pm", at: t0, summary: "a"))
+    for i in 0..<60 { list = Handoffs.append(list, CaseHandoff(role: "pm", at: t0, summary: "m\(i)")) }
+    check(list.count == Handoffs.keep && list.last?.summary == "m59", "handoff: 파일에는 최근 50개까지")
+
+    // PR 작업 건 파일
+    let prDir = FileManager.default.temporaryDirectory.appendingPathComponent("pm-prs-\(UUID().uuidString)")
+    let b1 = ReviewCase.begin(target: target, domain: "acme", policy: SessionPolicy(), in: prDir, now: t0)
+    var first = b1.review
+    check(b1.decision == SessionPolicy.Decision(resumeId: nil, reason: nil) && first.handoffBlock(b1.decision) == nil && first.status == .open, "pr-case: 처음 리뷰는 새 세션, 블록 없음")
+    let comment = "sample-web#12 · 댓글 · 결함 1건\n결함:\n- pricing.py:3 음수 가격 검사 없음\n미확인(질문):\n- 할인 상한 정책"
+    check(first.finish(sessionId: "r1", usage: RunUsage(input: 10, cacheRead: 5000), answer: comment, now: minutes(1)) == nil, "pr-case: 댓글이면 리뷰 중 그대로")
+    first.save(in: prDir)
+    let text = (try? String(contentsOf: ReviewCase.file(target: target, in: prDir), encoding: .utf8)) ?? ""
+    check(text.contains("\"key\" : \"pr:acme\\/sample-web#12\"") || text.contains("\"key\" : \"pr:acme/sample-web#12\""), "pr-case: PR 파일 key")
+    check(text.contains("\"status\" : \"open\"") && text.contains("\"sessions\" : {") && text.contains("\"reviewer\" : {") && text.contains("\"contextTokens\" : 5010")
+          && text.contains("\"handoffs\" : [") && text.contains("\"findings\" : [") && text.contains("\"at\" : \"") && !text.contains("archivedAt") && !text.contains("\"label\""),
+          "pr-case: PR 파일 모양 (key·status·sessions·handoffs, 날짜 ISO 8601, 보관 전에는 archivedAt 없음)")
+    let b2 = ReviewCase.begin(target: target, domain: "acme", policy: SessionPolicy(), in: prDir, now: minutes(10))
+    check(b2.decision == SessionPolicy.Decision(resumeId: "r1", reason: nil) && b2.review.handoffBlock(b2.decision) == nil, "pr-case: 같은 PR 을 55분 안에 다시 리뷰하면 이어 쓰고 블록 없음")
+    let b3 = ReviewCase.begin(target: target, domain: "acme", policy: SessionPolicy(), in: prDir, now: minutes(90))
+    var late = b3.review
+    let lateBlock = late.handoffBlock(b3.decision) ?? ""
+    check(b3.decision.resumeId == nil && b3.decision.reason == "식음 89분 (기준 55분)" && lateBlock.contains("- 리뷰어: sample-web#12 · 댓글 · 결함 1건")
+          && lateBlock.contains(Handoffs.findingsTitle + "\n- 결함: pricing.py:3 음수 가격 검사 없음\n- 미확인: 할인 상한 정책"),
+          "pr-case: 같은 PR 이 시간 초과로 새 세션이면 이전 지적이 들어간 인계 블록")
+    let approved = late.finish(sessionId: "r2", usage: nil, answer: "sample-web#12 · 승인 · 결함 없음", now: minutes(95))
+    late.save(in: prDir)
+    let back = ReviewCase.load(target: target, in: prDir)
+    check(approved == .approved && late.isArchived && back?.status == .approved && back?.archivedAt != nil && back?.handoffs?.count == 2 && back?.sessions?["reviewer"]?.id == "r2",
+          "pr-case: 승인하면 보관(archivedAt)하고 기록은 남음")
+    let reopened = ReviewCase.begin(target: target, domain: "acme", policy: SessionPolicy(), in: prDir, now: minutes(200)).review
+    check(!reopened.isArchived && reopened.status == .open && reopened.handoffs?.count == 2, "pr-case: 같은 PR 에 다시 요청이 오면 다시 엶 (메모 유지)")
+    check(ReviewCase.outcome("sample-web#12 · 닫힘") == .closed && ReviewCase.outcome("**sample-web#12 · 승인 · 결함 없음**") == .approved
+          && ReviewCase.outcome("sample-web#12 · 확신할 수 없음 · diff 가 너무 큼") == nil && ReviewCase.outcome("승인 이유를 적는다") == nil
+          && ReviewCase.outcome("sample-web#12 · 건너뜀 · 팀 요청") == nil,
+          "pr-case: 마지막 답 첫 줄의 결과로 승인·닫힘만 보관")
+    try? FileManager.default.removeItem(at: prDir)
+
+    // 새 필드가 없는 옛 진행 파일도 읽힌다 (handoffs·sessions 없음), 있으면 왕복
+    let pdir = FileManager.default.temporaryDirectory.appendingPathComponent("pm-old-pipeline-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: pdir, withIntermediateDirectories: true)
+    let oldJSON = #"{"costs":{},"create":[],"createdAt":"2026-11-17T08:00:00Z","domain":"acme","event":"e","history":[],"key":"ACME-9","mustStop":false,"note":"","reviewerBacks":0,"stage":"dev","summary":"","testerBacks":0,"testsPassed":false,"timeoutMinutes":30,"title":"t","updatedAt":"2026-11-17T08:00:00Z"}"#
+    try? oldJSON.write(to: pdir.appendingPathComponent("ACME-9.json"), atomically: true, encoding: .utf8)
+    var old = PipelineState.load(key: "ACME-9", in: pdir)
+    check(old?.stage == .dev && old?.handoffs == nil && old?.sessions == nil && Handoffs.block(old?.handoffs, role: "dev") == nil, "handoff: 예전 진행 파일(handoffs 없음)도 읽힘")
+    old?.addHandoff(role: .dev, note: "고쳤다", answer: "답", now: t0)
+    old?.save(in: pdir)
+    let saved = (try? String(contentsOf: PipelineState.file(key: "ACME-9", in: pdir), encoding: .utf8)) ?? ""
+    let reread = PipelineState.load(key: "ACME-9", in: pdir)
+    check(saved.contains("\"handoffs\" : [") && saved.contains("\"role\" : \"dev\"") && saved.contains("\"summary\" : \"고쳤다\\n답: 답\"") && !saved.contains("\"findings\"")
+          && reread?.handoffs == [CaseHandoff(role: "dev", at: t0, summary: "고쳤다\n답: 답")],
+          "handoff: 진행 파일 handoffs [{role, at, summary}] 저장·읽기 (리뷰어가 아니면 findings 없음)")
+    try? FileManager.default.removeItem(at: pdir)
+
+    // 작업 탭 기록: 끝난 건의 역할 세션은 보관(목록에서 빠지고 기록은 남음), 빈 칸은 지운다. 다른 건 세션은 그대로.
+    var book = WorkSessionBook()
+    book.record(repo: "acme:pm", sessionId: "p1", key: "ACME-1", usage: nil, now: t0)
+    book.record(repo: "acme:dev", sessionId: "d1", key: "ACME-1", usage: nil, now: t0)
+    book.record(repo: "acme:tester", sessionId: "t0", key: "ACME-0", usage: nil, now: t0)
+    book.startFresh(repo: "acme:reviewer", caseKey: "jira:ACME-1", reason: "식음 61분 (기준 55분)", now: t0)
+    let keys = PipelineRole.allCases.map { PipelineRole.sessionKey(domain: "acme", role: $0) }
+    let firstArchive = book.archiveCase(keys, label: "ACME-1")
+    check(firstArchive && book.sessions["acme:pm"] == nil && book.sessions["acme:dev"] == nil && book.sessions["acme:reviewer"] == nil
+          && book.sessions["acme:tester"]?.id == "t0" && book.archived.map(\.id).sorted() == ["d1", "p1"] && !book.archiveCase(keys, label: "ACME-1"),
+          "archive: 끝난 티켓의 역할 세션은 보관, 빈 칸은 지우고, 다른 티켓 세션은 그대로")
+    check(book.lastArchived("acme:dev")?.id == "d1" && book.previous("acme:dev")?.caseKey == "ACME-1" && book.previous("acme:dev")?.id == "d1",
+          "archive: 보관한 칸의 마지막 세션은 작업 탭·다음 건 이유에 쓴다")
+    let nextTicket = book.startFresh(repo: "acme:dev", caseKey: "jira:ACME-2", reason: nil, now: minutes(5))
+    let again = book.startFresh(repo: "acme:dev", caseKey: "jira:ACME-2", reason: nil, now: minutes(6))
+    check(nextTicket && book.sessions["acme:dev"]?.freshReason == "새 티켓 (앞: ACME-1)" && !again && book.archived.count == 2,
+          "archive: 보관 뒤 다음 티켓도 '새 티켓 (앞: KEY)' (같은 이유로 두 번 바꾸지 않음)")
+    book.record(repo: "acme:reviewer", sessionId: "r1", key: "sample-web#7", usage: nil, now: t0)
+    let reviewerSwitch = book.startFresh(repo: "acme:reviewer", caseKey: "jira:ACME-2", reason: nil, now: t0)
+    check(reviewerSwitch && book.sessions["acme:reviewer"]?.freshReason == "새 티켓 (앞: sample-web#7)" && book.archived.contains { $0.id == "r1" },
+          "archive: 리뷰어 칸은 PR 리뷰와 Jira 리뷰어가 함께 쓰고, 건이 바뀌면 새로")
 }
 
 print("passed: \(passed), failed: \(failures)")
