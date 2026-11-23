@@ -271,11 +271,13 @@ sealed class GitHubLoginDialog
     readonly Window window;
     readonly GitHubLogin login = new();
     readonly StackPanel content = new();
+    readonly string host;
     string? code;
     bool? result;
 
     public GitHubLoginDialog(string host, AppSettings settings)
     {
+        this.host = host;
         var body = new StackPanel { Margin = new Thickness(20) };
         body.Children.Add(Ui.Text($"GitHub 연결 ({host})", 15, "TextFg", FontWeights.SemiBold));
         content.Margin = new Thickness(0, 12, 0, 12);
@@ -292,7 +294,11 @@ sealed class GitHubLoginDialog
             {
                 switch (e)
                 {
-                    case GitHubLogin.Event.Code c: code = c.Value; break;
+                    case GitHubLogin.Event.Code c:
+                        // Windows 에서는 화면 없이 실행된 gh 가 브라우저를 열지 않으므로 승인 페이지를 직접 연다
+                        if (code == null) OpenDevicePage();
+                        code = c.Value;
+                        break;
                     case GitHubLogin.Event.Finished f: result = f.Ok; break;
                 }
                 Render(close);
@@ -311,7 +317,7 @@ sealed class GitHubLoginDialog
         }
         else if (code is { } value)
         {
-            content.Children.Add(Ui.Text("브라우저가 열리면 아래 코드를 입력하고 승인해 주세요.", 13, "TextFg", wrap: true));
+            content.Children.Add(Ui.Text("브라우저에서 아래 코드를 입력하고 승인해 주세요. 브라우저가 열리지 않으면 [브라우저 열기]를 누르세요.", 13, "TextFg", wrap: true));
             var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
             var codeText = new TextBox { Text = value, IsReadOnly = true, FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 20, BorderThickness = new Thickness(0), Background = Brushes.Transparent };
             codeText.SetResourceReference(Control.ForegroundProperty, "TextFg");
@@ -319,9 +325,20 @@ sealed class GitHubLoginDialog
             var copy = Ui.Pill("복사", () => { try { Clipboard.SetText(value); } catch { } });
             copy.Margin = new Thickness(10, 0, 0, 0);
             row.Children.Add(copy);
+            var browse = Ui.Pill("브라우저 열기", OpenDevicePage);
+            browse.Margin = new Thickness(6, 0, 0, 0);
+            ChatUi.Id(browse, "GitHubLoginBrowse");
+            row.Children.Add(browse);
             content.Children.Add(row);
         }
         else content.Children.Add(Ui.Text("로그인 준비 중…", 13, "TextSecondary"));
+    }
+
+    /// GitHub 기기 승인 페이지 (gh auth login --web 이 여는 곳)
+    void OpenDevicePage()
+    {
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo($"https://{host}/login/device") { UseShellExecute = true }); }
+        catch { }
     }
 
     public bool? ShowModal() => EditorStyle.ShowModal(window);
