@@ -2,23 +2,31 @@
 # 가상 Jira(JSON 파일)와 로컬 bare git 저장소만 쓴다: 회사 Jira·GitHub 는 건드리지 않는다.
 # 시험 폴더를 만들고(이전 시험 폴더는 지운다) PokeMate.Trial 로 PM -> 개발 -> 테스터 -> 리뷰어 -> push 를 돌린다.
 #
-# 사용: .\pipeline-trial.ps1 -Root <시험 폴더> [-Prompts <프롬프트 폴더>] [-ClaudePath <claude 실행 파일>] [-RepoDir <저장소 폴더>]
+# 사용: .\pipeline-trial.ps1 -Root <시험 폴더> [-Prompts <프롬프트 폴더>] [-ClaudePath <claude 실행 파일> | -FakeClaude] [-RepoDir <저장소 폴더>]
+#                             [-Key <티켓 키>] [-Keep] [-Review <PR 주소>]
 #   -Root        시험 폴더(없으면 만든다). 이미 시험 폴더(jira, pipelines 가 든 폴더)면 지우고 다시 만든다. 다른 폴더는 지우지 않고 멈춘다.
 #   -Prompts     역할 프롬프트 폴더. 기본은 저장소의 shared\prompts
 #   -ClaudePath  시험 폴더의 data\settings.json 에 넣을 claude 경로. 없으면 설정 기본값(%USERPROFILE%\.local\bin\claude.exe)을 쓴다.
 #                실제 Claude 로 돌리려면 시험 데이터 폴더(<Root>\data\claude-config)에 앱 전용 로그인이 있어야 한다.
+#   -FakeClaude  실제 Claude 대신 PokeMate.Trial 자신을 claude 로 쓴다 (정해 둔 답, 받은 프롬프트는 <Root>\fake-claude\ 에. FakeClaude.cs)
 #   -RepoDir     data\settings.json 의 repoDir (uv 가 mcp-server 를 찾는 곳). 없으면 설정 기본값
+#   -Key         처리할 티켓 (ACME-101 기본, 가짜 Jira 에 ACME-101·ACME-102·ACME-103 이 있다)
+#   -Keep        시험 폴더를 지우지 않고 이어서 돌린다 (세션 기록·진행 파일을 그대로 두고 다음 티켓·같은 티켓 다시 돌리기)
+#   -Review      Jira 대신 GitHub 리뷰 한 차례를 돌린다 (PR 주소, 도메인 acme. 실제 GitHub 는 부르지 않는다)
 param(
     [Parameter(Mandatory = $true)][string]$Root,
     [string]$Prompts,
     [string]$ClaudePath,
-    [string]$RepoDir
+    [switch]$FakeClaude,
+    [string]$RepoDir,
+    [string]$Key = 'ACME-101',
+    [switch]$Keep,
+    [string]$Review
 )
 $ErrorActionPreference = 'Stop'
 $app = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if (-not $Prompts) { $Prompts = (Resolve-Path (Join-Path $app '..\shared\prompts')).Path }
 $Root = [System.IO.Path]::GetFullPath($Root)
-$Key = 'ACME-101'
 $Repo = 'acme-sample-service'
 
 function Invoke-Git {
@@ -31,6 +39,21 @@ function Write-Utf8([string]$Path, [string]$Text) {
     $dir = Split-Path -Parent $Path
     if ($dir) { New-Item -ItemType Directory -Force $dir | Out-Null }
     [System.IO.File]::WriteAllText($Path, ($Text -replace "`r`n", "`n"), (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Invoke-Trial {
+    # 사내 프록시 변수가 죽어 있으면 dotnet 이 기다리므로 이 프로세스에서만 뺀다
+    foreach ($name in 'http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY') { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+    $env:POKEMATE_TRIAL = $Root
+    $env:POKEMATE_DATA_DIR = Join-Path $Root 'data'
+    $trialArgs = if ($Review) { @($Root, '--review', $Review, 'acme') } else { @($Root, $Key, 'acme', $Repo, $Prompts) }
+    & dotnet run --project (Join-Path $app 'src\PokeMate.Trial') -- @trialArgs
+    exit $LASTEXITCODE
+}
+
+if ($Keep) {
+    if (-not ((Test-Path -LiteralPath (Join-Path $Root 'jira')) -and (Test-Path -LiteralPath (Join-Path $Root 'pipelines')))) { throw "$Root 는 이전 시험 폴더가 아니라서 이어서 돌릴 수 없어요." }
+    Invoke-Trial
 }
 
 # 시험 폴더 지우기: 이전 시험 폴더만. 드라이브 루트·홈 폴더·저장소 같은 곳을 잘못 줬을 때 지우지 않는다.
@@ -89,7 +112,7 @@ $automation = [ordered]@{
 }
 Write-Utf8 (Join-Path $Root 'automation.json') ($automation | ConvertTo-Json -Depth 5)
 
-Write-Utf8 (Join-Path $Root "jira\$Key.json") @'
+Write-Utf8 (Join-Path $Root "jira\ACME-101.json") @'
 {"issue": {"key": "ACME-101", "fields": {
   "summary": "할인가 계산 함수 추가",
   "description": "acme-sample-service 의 pricing.py 에 discount_price(price, percent) 를 추가한다.\n\n완료 조건\n1. 할인가 = price * (100 - percent) // 100 (원 단위 내림)\n2. percent 가 0 미만이거나 100 초과면 ValueError\n3. price 가 음수면 ValueError\n4. 위 조건마다 tests/test_pricing.py 에 unittest 테스트가 있다",
@@ -102,6 +125,27 @@ Write-Utf8 (Join-Path $Root "jira\$Key.json") @'
  "transitions": [{"id": "1", "name": "Start", "to": {"name": "In Progress"}}, {"id": "2", "name": "Review", "to": {"name": "In Review"}}]}
 '@
 
+# 다음 티켓(세션 규칙 시험용): ACME-102 는 같은 도메인의 다른 티켓, ACME-103 은 PM 이 확인 필요로 멈추는 티켓
+foreach ($next in @(@('ACME-102', '할인가 반올림 규칙 정리'), @('ACME-103', '할인 상한 확인'))) {
+    $issue = [ordered]@{
+        issue       = [ordered]@{ key = $next[0]; fields = [ordered]@{
+            summary = $next[1]; description = 'acme-sample-service 의 pricing.py 할인 규칙.'; issuetype = @{ name = 'Story' }; status = @{ name = 'Open' }
+            priority = @{ name = 'Medium' }; assignee = @{ name = 'sample-user'; key = 'sample-user'; displayName = 'Sample User' }
+            components = @(@{ name = 'acme-sample-service' }); labels = @(); issuelinks = @() } }
+        comments    = @()
+        transitions = @(@{ id = '1'; name = 'Start'; to = @{ name = 'In Progress' } }, @{ id = '2'; name = 'Review'; to = @{ name = 'In Review' } })
+    }
+    Write-Utf8 (Join-Path $Root "jira\$($next[0]).json") ($issue | ConvertTo-Json -Depth 8)
+}
+
+# 가짜 claude: PokeMate.Trial 을 먼저 빌드하고 그 실행 파일을 claudePath 로 둔다
+if ($FakeClaude) {
+    foreach ($name in 'http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY') { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+    & dotnet build (Join-Path $app 'src\PokeMate.Trial') -nologo -v q
+    if ($LASTEXITCODE -ne 0) { throw "PokeMate.Trial 빌드 실패" }
+    $ClaudePath = Join-Path $app 'src\PokeMate.Trial\bin\Debug\net7.0-windows\PokeMate.Trial.exe'
+}
+
 # 시험 데이터 폴더의 설정 (선택)
 if ($ClaudePath -or $RepoDir) {
     $settings = [ordered]@{}
@@ -110,9 +154,4 @@ if ($ClaudePath -or $RepoDir) {
     Write-Utf8 (Join-Path $Root 'data\settings.json') ($settings | ConvertTo-Json)
 }
 
-# 사내 프록시 변수가 죽어 있으면 dotnet 이 기다리므로 이 프로세스에서만 뺀다
-foreach ($name in 'http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY') { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
-$env:POKEMATE_TRIAL = $Root
-$env:POKEMATE_DATA_DIR = Join-Path $Root 'data'
-& dotnet run --project (Join-Path $app 'src\PokeMate.Trial') -- $Root $Key acme $Repo $Prompts
-exit $LASTEXITCODE
+Invoke-Trial

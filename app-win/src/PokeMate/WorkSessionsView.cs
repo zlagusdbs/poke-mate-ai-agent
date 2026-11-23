@@ -263,6 +263,16 @@ public sealed class WorkSessionsView : UserControl
                 row.Margin = new Thickness(12, 0, 0, 0);
                 block.Children.Add(row);
             }
+            else if (center.Book.LastArchived(key) is { } last)
+            {
+                // 끝나 보관한 건(티켓 끝·PR 승인)의 세션: 마지막 건과 새로 시작했던 이유만 보인다
+                var why = last.FreshReason is { } reason ? $" · 새로 시작: {reason}" : "";
+                var ended = Ui.Text($"{role.Label()} · 끝난 건 {last.Keys.LastOrDefault() ?? "-"} · 마지막 {last.LastUsed.ToLocalTime().ToString("M'/'d HH:mm", CultureInfo.InvariantCulture)}{why}",
+                                    11, "TextSecondary");
+                ended.Margin = new Thickness(18, 2, 0, 2);
+                ended.TextTrimming = TextTrimming.CharacterEllipsis;
+                block.Children.Add(ended);
+            }
             else
             {
                 var none = Ui.Text($"{role.Label()} · 아직 없음", 11, "TextSecondary");

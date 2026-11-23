@@ -269,6 +269,8 @@ public sealed record PipelineState
     public Dictionary<string, double> Costs { get; set; } = new();
     /// 역할(pm·dev·tester·reviewer) → 이 티켓의 그 역할 세션. 없으면(옛 파일·아직 안 돎) null 이고 파일에도 안 적는다.
     public Dictionary<string, PipelineSession>? Sessions { get; set; }
+    /// 인계 메모: 역할이 한 차례를 마칠 때마다 한 줄 (오래된 것부터). 없으면(옛 파일·아직 안 돎) null 이고 파일에도 안 적는다.
+    public List<CaseHandoff>? Handoffs { get; set; }
     public List<Step> History { get; set; } = new();
     public int TimeoutMinutes { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -289,7 +291,7 @@ public sealed record PipelineState
     }
 
     /// 맥의 값 복사 (목록·표는 따로)
-    public PipelineState Copy() => this with { Create = Create.ToList(), Costs = new Dictionary<string, double>(Costs), Sessions = Sessions == null ? null : new Dictionary<string, PipelineSession>(Sessions), History = History.ToList() };
+    public PipelineState Copy() => this with { Create = Create.ToList(), Costs = new Dictionary<string, double>(Costs), Sessions = Sessions == null ? null : new Dictionary<string, PipelineSession>(Sessions), Handoffs = Handoffs?.ToList(), History = History.ToList() };
 
     [JsonIgnore]
     public bool IsActive => Stage is StageKind.Pm or StageKind.Dev or StageKind.Tester or StageKind.Reviewer or StageKind.Branch or StageKind.Push;
@@ -314,11 +316,19 @@ public sealed record PipelineState
         _ => null,
     };
 
-    /// 이 티켓의 그 역할 세션을 이어 쓸지: (id, 새로 시작하는 이유). 이 티켓 세션이 없으면 (null, null), 기준(분·토큰·리뷰어)에 걸리면 (null, 이유).
-    public (string? Id, string? Reason) ReuseSession(PipelineRole role, SessionReuse policy, DateTimeOffset now)
+    /// 이 티켓 한 건의 키 `jira:{KEY}` (세션 단위)
+    [JsonIgnore] public string CaseKey => SessionPolicy.JiraKey(Key);
+
+    /// 이 티켓의 그 역할 세션 (`SessionPolicy.Decide` 의 입력). 없으면 null.
+    public SessionPolicy.Previous? PreviousSession(PipelineRole role) =>
+        Sessions != null && Sessions.TryGetValue(role.Raw(), out var s) && !string.IsNullOrEmpty(s.Id)
+            ? new SessionPolicy.Previous(CaseKey, s.Id, s.LastUsed, s.ContextTokens) : null;
+
+    /// 역할이 한 차례를 마치면 인계 메모를 남긴다: note 와 답 앞부분, 리뷰어는 결함·미확인 항목 제목도.
+    public void AddHandoff(PipelineRole role, string note, string answer, DateTimeOffset now)
     {
-        if (Sessions == null || !Sessions.TryGetValue(role.Raw(), out var s) || string.IsNullOrEmpty(s.Id)) return (null, null);
-        return policy.FreshReason(s, role, now) is string reason ? (null, reason) : (s.Id, null);
+        var findings = role == PipelineRole.Reviewer ? PokeMate.Core.Handoffs.Findings(note + "\n" + PipelineNext.Strip(answer)) : null;
+        Handoffs = PokeMate.Core.Handoffs.Append(Handoffs, new CaseHandoff(role.Raw(), now, PokeMate.Core.Handoffs.Summary(note, answer), findings));
     }
 
     /// 역할 실행이 끝난 뒤 이 티켓의 그 역할 세션을 기록한다. 같은 세션이면 사용량을 못 받았을 때 문맥 토큰을 그대로 둔다.
@@ -624,10 +634,12 @@ public sealed class PipelineIO
     public Func<PipelineState, Task> Save { get; set; }
     /// (제목, 내용): 앱 안 알림
     public Func<string, string, Task> Notice { get; set; }
-    /// 세션 이어 쓰기 기준 (설정). 기본값은 55분·12만 토큰·리뷰어 늘 새로
-    public Func<SessionReuse> Policy { get; set; }
-    /// (세션 키, 티켓 키, 이어 쓸 세션 id 또는 null, 새로 시작하는 이유 또는 null): 역할을 실행하기 전에 고른 결과를 알린다 (작업 탭 기록용)
+    /// 세션 이어 쓰기 기준 (설정). 기본값은 55분·12만 토큰
+    public Func<SessionPolicy> Policy { get; set; }
+    /// (세션 키, 건 키 `jira:{KEY}`, 이어 쓸 세션 id 또는 null, 새로 시작하는 이유 또는 null): 역할을 실행하기 전에 고른 결과를 알린다 (작업 탭 기록용)
     public Func<string, string, string?, string?, Task> SessionChosen { get; set; }
+    /// (티켓 키, 그 도메인의 역할 세션 키들): 티켓이 끝나면(done·stopped) 그 건의 역할 세션을 보관한다 (작업 탭 기록용)
+    public Func<string, IReadOnlyList<string>, Task> ArchiveCase { get; set; }
 
     public PipelineIO(Func<PipelineRole, string, string?, string?, ClaudeCommand.WriteAccess, Task<PipelineRoleResult>> runRole,
                       Func<IReadOnlyList<string>, Task<(bool Ok, string Output)>> helper,
@@ -635,8 +647,9 @@ public sealed class PipelineIO
                       Func<string, string, string, RunUsage?, Task> recordSession,
                       Func<PipelineState, Task> save,
                       Func<string, string, Task>? notice = null,
-                      Func<SessionReuse>? policy = null,
-                      Func<string, string, string?, string?, Task>? sessionChosen = null)
+                      Func<SessionPolicy>? policy = null,
+                      Func<string, string, string?, string?, Task>? sessionChosen = null,
+                      Func<string, IReadOnlyList<string>, Task>? archiveCase = null)
     {
         RunRole = runRole;
         Helper = helper;
@@ -644,8 +657,9 @@ public sealed class PipelineIO
         RecordSession = recordSession;
         Save = save;
         Notice = notice ?? ((_, _) => Task.CompletedTask);
-        Policy = policy ?? (() => new SessionReuse());
+        Policy = policy ?? (() => new SessionPolicy());
         SessionChosen = sessionChosen ?? ((_, _, _, _) => Task.CompletedTask);
+        ArchiveCase = archiveCase ?? ((_, _) => Task.CompletedTask);
     }
 }
 
@@ -701,7 +715,7 @@ public static class JiraPipeline
 {
     public const string InterruptedNote = "앱이 꺼져서 이 역할 실행이 중간에 끊겼다. 이미 한 일(Jira 댓글·상태·알림·jira-state·W 파일 수정)을 Jira·W·기록으로 먼저 확인하고, 이미 한 것은 다시 하지 말고 남은 것만 이어서 한다. 끝나면 아래 지시대로 답 끝 블록을 붙인다.";
 
-    public const string ResumeNote = "이 세션은 같은 도메인에서 같은 역할로 이전 티켓을 처리하던 세션이다. 이미 읽은 지식은 다시 읽지 말고 이번 티켓에 새로 필요한 것만 찾아라.";
+    public const string ResumeNote = "이 세션은 이 티켓에서 같은 역할로 앞 차례를 처리하던 세션이다. 이미 읽은 지식·코드는 다시 읽지 말고 이번 차례에 새로 필요한 것만 찾아라.";
 
     /// 역할에게 줄 프롬프트. 경로(작업 폴더 W·diff 파일)는 `/` 구분으로 적는다: Claude 의 Bash 는 Windows 에서 Git Bash 라서 역슬래시 경로는 따옴표 없이 쓰면 깨진다.
     public static string Prompt(PipelineRole role, PipelineState state, PipelineConfig config, bool resumed, string? diffFile)
@@ -712,6 +726,7 @@ public static class JiraPipeline
             $"이번 건: {s.Key} · 역할: {role.Label()} ({PipelineRoleExtensions.SessionKey(s.Domain, role)})",
         };
         if (resumed) parts.Add(ResumeNote);
+        else if (PokeMate.Core.Handoffs.Block(s.Handoffs, role.Raw()) is { } handoff) parts.Add(handoff);
         parts.Add(s.Event);
         var knowledge = config.Domains.KnowledgeText(s.Domain, config.Home);
         if (config.Common.Length > 0) parts.Add("## 공통 지시\n" + config.Common.Replace(DomainMap.Placeholder, knowledge));
@@ -786,6 +801,8 @@ public static class JiraPipeline
             await io.Helper(new[] { "jira-state", "--key", s.Key, "--type", "기타", "--result", $"멈춤: {why}" });
             await io.Save(s.Copy());
         }
+        if (s.Stage is PipelineState.StageKind.Done or PipelineState.StageKind.Stopped)
+            await io.ArchiveCase(s.Key, PipelineRoleExtensions.AllCases.Select(r => PipelineRoleExtensions.SessionKey(s.Domain, r)).ToList());
         return s;
     }
 
@@ -884,8 +901,9 @@ public static class JiraPipeline
         }
         else
         {
-            var (known, freshReason) = s.ReuseSession(role, io.Policy(), now());
-            await io.SessionChosen(sessionKey, s.Key, known, freshReason);
+            var decision = io.Policy().Decide(s.CaseKey, role.Raw(), s.PreviousSession(role), now());
+            var known = decision.ResumeId;
+            await io.SessionChosen(sessionKey, s.CaseKey, known, decision.Reason);
             var fresh = known == null ? Guid.NewGuid().ToString().ToLowerInvariant() : null;
             usedId = known ?? fresh ?? "";
             s.Inflight = new PipelineState.InflightRun(role.Raw(), usedId, now());
@@ -909,7 +927,9 @@ public static class JiraPipeline
         }
         var testerBefore = s.TesterBacks;
         var reviewerBefore = s.ReviewerBacks;
-        s.Apply(role, PipelineNext.Extract(answer), answer, now());
+        var next = PipelineNext.Extract(answer);
+        s.Apply(role, next, answer, now());
+        s.AddHandoff(role, next?.Note ?? "", answer, now());
         if (s.TesterBacks > testerBefore || s.ReviewerBacks > reviewerBefore)
             await BounceNotice(s, io, tester: s.TesterBacks > testerBefore);
         return true;

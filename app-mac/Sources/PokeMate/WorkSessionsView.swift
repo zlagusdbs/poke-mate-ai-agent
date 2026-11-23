@@ -126,6 +126,11 @@ struct WorkTabView: View {
                 if let session = center.book.sessions[key] {
                     row(session, name: role.label, active: (state?.isActive == true && state?.role == role) || (role == .reviewer && center.reviewing[domain] != nil))
                         .padding(.leading, 12)
+                } else if let last = center.book.lastArchived(key) {
+                    // 끝나 보관한 건(티켓 끝·PR 승인)의 세션: 마지막 건과 새로 시작했던 이유만 보인다
+                    Text("\(role.label) · 끝난 건 \(last.keys.last ?? "-") · 마지막 \(last.lastUsed.formatted(Self.clock))\(last.freshReason.map { " · 새로 시작: \($0)" } ?? "")")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .padding(.leading, 18).padding(.vertical, 2)
                 } else {
                     Text("\(role.label) · 아직 없음").font(.caption).foregroundStyle(.secondary)
                         .padding(.leading, 18).padding(.vertical, 2)

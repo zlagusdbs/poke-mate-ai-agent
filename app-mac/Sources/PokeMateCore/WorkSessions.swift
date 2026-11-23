@@ -81,53 +81,110 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-public struct SessionReuse: Equatable, Sendable {
+/// 자동 처리 세션을 이어 쓸지 새로 시작할지 정하는 단 하나의 규칙 (설정의 "세션 이어 쓰기": 쉰 시간·문맥 크기).
+/// 세션 단위는 작업 한 건(`jira:{KEY}`, `pr:{owner}/{repo}#{number}`)이다. 같은 건 안에서만 이어 쓰고, 건이 바뀌면 늘 새로 시작한다.
+/// 모든 자동 처리 진입점(Jira 역할 처리·GitHub 리뷰·Trial·Eval)이 `decide` 만 부른다. 기능별 예외는 두지 않는다.
+public struct SessionPolicy: Equatable, Sendable {
     public static let defaultMinutes = 55
     public static let defaultTokens = 120_000
 
-    public static let reviewerReason = "리뷰어는 늘 새로"
-
     public var idleMinutes: Int
     public var maxTokens: Int
-    public var freshReviewer: Bool
 
-    public init(idleMinutes: Int = SessionReuse.defaultMinutes, maxTokens: Int = SessionReuse.defaultTokens, freshReviewer: Bool = true) {
+    public init(idleMinutes: Int = SessionPolicy.defaultMinutes, maxTokens: Int = SessionPolicy.defaultTokens) {
         self.idleMinutes = idleMinutes
         self.maxTokens = maxTokens
-        self.freshReviewer = freshReviewer
     }
 
     public init(settings: AppSettings) {
-        self.init(idleMinutes: settings.sessionReuseMinutes, maxTokens: settings.sessionReuseMaxTokens, freshReviewer: settings.reviewerAlwaysFresh)
+        self.init(idleMinutes: settings.sessionReuseMinutes, maxTokens: settings.sessionReuseMaxTokens)
     }
 
-    public static let always = SessionReuse(idleMinutes: 0, maxTokens: 0, freshReviewer: false)
+    /// 같은 건 안에서는 늘 이어 쓰기 (둘 다 0)
+    public static let always = SessionPolicy(idleMinutes: 0, maxTokens: 0)
 
-    public func freshReason(for session: WorkSession, now: Date) -> String? {
-        freshReason(reviewer: PipelineRole.split(session.repo)?.role == .reviewer, lastUsed: session.lastUsed, contextTokens: session.contextTokens, now: now)
-    }
+    /// 그 건·역할의 이전 세션. 다른 건의 것일 수도 있다 (작업 탭 기록에서 온 것: 그때는 새로 시작하고 이유만 남는다).
+    public struct Previous: Equatable, Sendable {
+        public var caseKey: String
+        public var id: String
+        public var lastUsed: Date
+        public var contextTokens: Int
 
-    /// 티켓 하나의 역할 세션(`pipelines/{KEY}.json` 의 sessions)에 같은 기준을 쓴다.
-    public func freshReason(for session: PipelineSession, role: PipelineRole, now: Date) -> String? {
-        freshReason(reviewer: role == .reviewer, lastUsed: session.lastUsed, contextTokens: session.contextTokens, now: now)
-    }
-
-    private func freshReason(reviewer: Bool, lastUsed: Date, contextTokens: Int, now: Date) -> String? {
-        if freshReviewer, reviewer {
-            return Self.reviewerReason
+        public init(caseKey: String, id: String, lastUsed: Date, contextTokens: Int) {
+            self.caseKey = caseKey
+            self.id = id
+            self.lastUsed = lastUsed
+            self.contextTokens = contextTokens
         }
-        let idle = Int(now.timeIntervalSince(lastUsed) / 60)
+    }
+
+    /// 이어 쓸 세션 id (새로 시작하면 nil)와 새로 시작하는 이유 (처음이면 nil)
+    public struct Decision: Equatable, Sendable {
+        public var resumeId: String?
+        public var reason: String?
+
+        public init(resumeId: String?, reason: String?) {
+            self.resumeId = resumeId
+            self.reason = reason
+        }
+
+        public var resumed: Bool { resumeId != nil }
+    }
+
+    /// 이어 쓰기: 이전 세션이 같은 건이고, 마지막 사용이 idleMinutes 안이고, 문맥이 maxTokens 미만. 0 이면 그 기준은 끈다.
+    /// 다른 건의 세션은 어떤 설정에서도 이어 쓰지 않는다. `role` 은 기록용이고 판단을 바꾸지 않는다 (역할별 예외 없음).
+    public func decide(caseKey: String, role: String, previous: Previous?, now: Date) -> Decision {
+        guard let previous, !previous.id.isEmpty else { return Decision(resumeId: nil, reason: nil) }
+        if !Self.sameCase(previous.caseKey, caseKey) {
+            return Decision(resumeId: nil, reason: previous.caseKey.isEmpty ? nil : Self.newCaseReason(caseKey: caseKey, previous: previous.caseKey))
+        }
+        let idle = Int(now.timeIntervalSince(previous.lastUsed) / 60)
         if idleMinutes > 0 && idle >= idleMinutes {
-            return "식음 \(idle)분 (기준 \(idleMinutes)분)"
+            return Decision(resumeId: nil, reason: "식음 \(idle)분 (기준 \(idleMinutes)분)")
         }
-        if maxTokens > 0 && contextTokens >= maxTokens {
-            return "문맥 \(TokenFormat.compact(contextTokens)) (기준 \(TokenFormat.compact(maxTokens)))"
+        if maxTokens > 0 && previous.contextTokens >= maxTokens {
+            return Decision(resumeId: nil, reason: "문맥 \(TokenFormat.compact(previous.contextTokens)) (기준 \(TokenFormat.compact(maxTokens)))")
         }
-        return nil
+        return Decision(resumeId: previous.id, reason: nil)
     }
 
-    /// 같은 도메인의 앞 티켓 세션이 있는데 이 티켓은 아직 그 역할 세션이 없을 때 작업 탭에 남기는 이유
+    public static let jiraPrefix = "jira:"
+    public static let prPrefix = "pr:"
+
+    /// Jira 티켓 한 건의 키: `jira:{KEY}`
+    public static func jiraKey(_ ticket: String) -> String { jiraPrefix + ticket }
+
+    /// PR 한 건의 키: `pr:{owner}/{repo}#{number}`
+    public static func prKey(owner: String, repo: String, number: Int) -> String { "\(prPrefix)\(owner)/\(repo)#\(number)" }
+
+    /// 화면·작업 탭 기록(`keys`)에 쓰는 짧은 이름: `jira:ACME-101` → `ACME-101`, `pr:acme/svc#12` → `svc#12`. 접두어가 없으면 그대로.
+    public static func label(_ caseKey: String) -> String {
+        if caseKey.hasPrefix(jiraPrefix) { return String(caseKey.dropFirst(jiraPrefix.count)) }
+        if caseKey.hasPrefix(prPrefix) {
+            let rest = String(caseKey.dropFirst(prPrefix.count))
+            guard let slash = rest.lastIndex(of: "/") else { return rest }
+            return String(rest[rest.index(after: slash)...])
+        }
+        return caseKey
+    }
+
+    private static func prefixed(_ key: String) -> Bool { key.hasPrefix(jiraPrefix) || key.hasPrefix(prPrefix) }
+
+    /// 같은 건인지. 둘 다 접두어가 있으면 키 그대로, 한쪽이 작업 탭 기록의 짧은 이름이면 짧은 이름끼리 비교한다.
+    public static func sameCase(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        if prefixed(a) && prefixed(b) { return false }
+        return label(a) == label(b)
+    }
+
+    /// 건이 바뀌어 새로 시작하는 이유: PR 이면 "새 PR (앞: repo#12)", 아니면 "새 티켓 (앞: ACME-101)"
+    public static func newCaseReason(caseKey: String, previous: String) -> String {
+        caseKey.hasPrefix(prPrefix) ? newPRReason(previous: label(previous)) : newTicketReason(previous: label(previous))
+    }
+
     public static func newTicketReason(previous: String) -> String { "새 티켓 (앞: \(previous))" }
+
+    public static func newPRReason(previous: String) -> String { "새 PR (앞: \(previous))" }
 }
 
 public struct WorkSessionBook: Codable, Equatable, Sendable {
@@ -170,30 +227,68 @@ public struct WorkSessionBook: Codable, Equatable, Sendable {
         return nil
     }
 
-    public mutating func reuseId(_ repo: String, policy: SessionReuse, now: Date) -> String? {
+    /// 레포 작업 세션(알림 자동 처리의 레포 세션)을 이어 쓸 id. 레포 세션은 그 레포 자체가 한 건이다 (`SessionPolicy.decide` 로 시간·문맥만 본다).
+    /// 새로 시작해야 하면 옛 세션을 보관하고 이유를 남긴 빈 세션을 두고 nil.
+    public mutating func reuseId(_ repo: String, policy: SessionPolicy, now: Date) -> String? {
         guard let s = sessions[repo], !s.id.isEmpty else { return nil }
-        guard let reason = policy.freshReason(for: s, now: now) else { return s.id }
+        let decision = policy.decide(caseKey: repo, role: "", previous: SessionPolicy.Previous(caseKey: repo, id: s.id, lastUsed: s.lastUsed, contextTokens: s.contextTokens), now: now)
+        if let id = decision.resumeId { return id }
         archived.append(s)
         var fresh = WorkSession(id: "", repo: repo, now: now)
-        fresh.freshReason = reason
+        fresh.freshReason = decision.reason
         sessions[repo] = fresh
         return nil
     }
 
-    /// 역할 세션을 새 티켓(또는 기준에 걸린 같은 티켓)이 새로 시작할 때 작업 탭 기록을 맞춘다. 앞 세션은 보관하고 이유를 남긴 빈 세션을 둔다.
-    /// `reason` 이 없고 앞 세션이 다른 티켓의 것이면 "새 티켓 (앞: KEY)". 바뀌었으면 true.
+    /// 작업 탭 칸(`{도메인}:{역할}`)의 마지막 세션: 지금 세션, 없으면(끝나 보관했으면) 가장 최근에 보관한 그 칸의 세션. 건 키는 그 세션의 마지막 `keys`.
+    public func previous(_ repo: String) -> SessionPolicy.Previous? {
+        let live = sessions[repo].flatMap { $0.id.isEmpty ? nil : $0 }
+        guard let s = live ?? lastArchived(repo) else { return nil }
+        return SessionPolicy.Previous(caseKey: s.keys.last ?? "", id: s.id, lastUsed: s.lastUsed, contextTokens: s.contextTokens)
+    }
+
+    /// 그 칸에서 가장 최근에 보관한 세션 (실행한 적 있는 것만)
+    public func lastArchived(_ repo: String) -> WorkSession? {
+        var best: WorkSession?
+        for a in archived where a.repo == repo && !a.id.isEmpty {
+            if best == nil || a.lastUsed >= best!.lastUsed { best = a }
+        }
+        return best
+    }
+
+    /// 역할 세션을 새로 시작할 때 작업 탭 기록을 맞춘다. 앞 세션은 보관하고 이유를 남긴 빈 세션을 둔다. 바뀌었으면 true.
+    /// `reason` 이 없으면 그 칸의 마지막 세션(지금 것 또는 보관한 것)으로 `SessionPolicy.decide` 가 이유를 정한다 (다른 건이면 "새 티켓 (앞: KEY)"·"새 PR (앞: repo#12)").
     @discardableResult
-    public mutating func startFresh(repo: String, ticket: String, reason: String?, now: Date) -> Bool {
+    public mutating func startFresh(repo: String, caseKey: String, reason: String?, now: Date) -> Bool {
         let current = sessions[repo]
         let live = current.map { !$0.id.isEmpty } ?? false
-        var reason = reason
-        if reason == nil, live, let previous = current?.keys.last, previous != ticket { reason = SessionReuse.newTicketReason(previous: previous) }
+        let reason = reason ?? SessionPolicy().decide(caseKey: caseKey, role: "", previous: previous(repo), now: now).reason
         if !live && reason == nil { return false }
+        if !live, let current, current.freshReason == reason { return false }
         if live, let current { archived.append(current) }
         var fresh = WorkSession(id: "", repo: repo, now: now)
         fresh.freshReason = reason
         sessions[repo] = fresh
         return true
+    }
+
+    /// 끝난 건(`label`: 티켓 키 또는 `repo#12`)의 역할 세션을 보관한다: 그 칸의 지금 세션이 이 건의 것이면 보관, 아직 실행하지 못한 빈 칸은 지운다.
+    /// 보관한 세션은 작업 탭 목록에서 빠지고 기록(`archived`)은 남는다. 바뀌었으면 true.
+    @discardableResult
+    public mutating func archiveCase(_ repos: [String], label: String) -> Bool {
+        var changed = false
+        for repo in repos {
+            guard let s = sessions[repo] else { continue }
+            if s.id.isEmpty {
+                sessions.removeValue(forKey: repo)
+                changed = true
+            } else if s.keys.last == label {
+                sessions.removeValue(forKey: repo)
+                archived.append(s)
+                changed = true
+            }
+        }
+        return changed
     }
 
     public mutating func record(repo: String, sessionId: String, key: String?, usage: RunUsage?, now: Date) {

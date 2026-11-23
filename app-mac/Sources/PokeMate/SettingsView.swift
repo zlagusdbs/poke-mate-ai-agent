@@ -33,8 +33,6 @@ struct SettingsView: View {
                     Text("늘 이어 쓰기").tag(0)
                     ForEach([30, 55, 120, 240], id: \.self) { Text("\($0)분").tag($0) }
                 }
-                Toggle("리뷰어는 늘 새 세션으로 시작", isOn: $model.settings.reviewerAlwaysFresh)
-                    .help("GitHub 리뷰의 도메인 리뷰어와 Jira 역할 처리의 리뷰어 단계. 이어 쓰면 앞 건의 판단 습관이 이어지고 캐시가 살아 있어도 더 비쌌어요. 끄면 아래 기준을 따라요")
                 Picker("자동 처리: 문맥이 이만큼이면 새 세션", selection: $model.settings.sessionReuseMaxTokens) {
                     Text("늘 이어 쓰기").tag(0)
                     ForEach([80_000, 120_000, 160_000, 200_000], id: \.self) { Text(TokenFormat.compact($0)).tag($0) }
@@ -42,7 +40,7 @@ struct SettingsView: View {
             } header: {
                 Text("작업 세션")
             } footer: {
-                Text("알림을 받으면 위쪽 '작업' 탭에서 새 세션으로 바꿀지 정하세요. 자동 처리는 마지막 사용 뒤 정한 시간이 지났거나 문맥이 정한 크기를 넘으면 새 세션으로 시작해요(캐시가 1시간이라 기본 55분·120k). 새 세션은 도메인 노트·지식부터 읽어요.").font(.caption).foregroundStyle(.secondary)
+                Text("알림을 받으면 위쪽 '작업' 탭에서 새 세션으로 바꿀지 정하세요. 쉰 시간·문맥 크기 기준은 모든 자동 처리 역할 공통이에요(Jira 역할 처리·GitHub 리뷰). 세션은 작업 한 건(티켓 하나, PR 하나) 안에서만 이어 쓰고, 마지막 사용 뒤 정한 시간이 지났거나 문맥이 정한 크기를 넘으면 새 세션으로 시작해요(캐시가 1시간이라 기본 55분·120k). 새 세션은 그 건의 인계 메모와 도메인 노트·지식부터 읽어요.").font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Picker(selection: $model.settings.automationModel) {

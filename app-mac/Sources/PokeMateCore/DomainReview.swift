@@ -119,12 +119,14 @@ public enum DomainReview {
 
     public static func sessionKey(_ domain: String) -> String { PipelineRole.sessionKey(domain: domain, role: .reviewer) }
 
+    /// 리뷰어 프롬프트. 세션은 PR 한 건마다 따로다(`SessionPolicy`). `firstRun` 은 새 세션인지, `handoff` 는 새 세션일 때 붙이는 "이번 건 인계" 블록.
     public static func reviewPrompt(target: ReviewTarget, domain: String, why: String, source: Source, firstRun: Bool,
-                                    notes: DomainNotes, helper: String, context: String) -> String {
+                                    notes: DomainNotes, helper: String, context: String, handoff: String? = nil) -> String {
         let session = sessionKey(domain)
-        let start = firstRun
-            ? "이 세션은 도메인 \(domain) 의 리뷰어 세션이다(Jira 역할별 처리의 리뷰어와 같은 세션). 이번이 첫 실행이니 domain-review 스킬 1절의 지식을 처음부터 읽는다."
-            : "이 세션은 도메인 \(domain) 의 리뷰어 세션으로 이전 리뷰·처리를 해 왔다. 이미 읽은 점검표·노트·지식은 다시 읽지 말고 이번 PR 에 새로 필요한 것만 찾는다. 점검표 답은 이번 PR 기준으로 새로 단다."
+        var start = firstRun
+            ? "이 세션은 이 PR 의 리뷰어 세션이다(PR 마다 따로 시작한다). 새 세션이니 domain-review 스킬 1절의 지식을 처음부터 읽는다."
+            : "이 세션은 이 PR 의 리뷰어 세션으로 앞 차례 리뷰를 해 왔다. 이미 읽은 점검표·노트·지식은 다시 읽지 말고 이번 차례에 새로 필요한 것만 찾는다. 점검표 답은 지금 PR 기준으로 새로 단다."
+        if firstRun, let handoff { start += "\n\n" + handoff + "\n" }
         return """
         이번 건: \(target.label) 리뷰 · 도메인 \(domain) (\(source.rawValue): \(why)) · 세션 \(session)
         \(start)

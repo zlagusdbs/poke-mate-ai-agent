@@ -6,7 +6,7 @@ var rest = Array(CommandLine.arguments.dropFirst())
 var only: [String] = []
 var outDir: URL?
 var casesFile = URL(fileURLWithPath: settings.repoDir).appendingPathComponent("local/eval/reviews.json")
-var reuse: SessionReuse?
+var reuse: SessionPolicy?
 while !rest.isEmpty {
     let arg = rest.removeFirst()
     switch arg {
@@ -20,7 +20,7 @@ while !rest.isEmpty {
         reuse = policy
     case "-h", "--help":
         print("usage: PokeMateEval [cases.json] [--case id]... [--out 결과 폴더] [--reuse always|default|분,토큰]")
-        print("  --reuse 를 주면 문제를 차례로 돌리며 실제처럼 {도메인}:reviewer 세션을 그 규칙으로 이어 쓴다. 없으면 문제마다 새 세션")
+        print("  --reuse 를 주면 앱과 같은 세션 규칙(SessionPolicy)으로 고른다: 같은 건(같은 PR·같은 가상 티켓)만 그 기준으로 이어 쓰고 다른 건은 새로. 없으면 문제마다 새 세션")
         exit(0)
     default: casesFile = URL(fileURLWithPath: arg)
     }
@@ -107,6 +107,7 @@ for item in cases {
     var sessionId = UUID().uuidString.lowercased()
     var resumeId: String?
     var freshReason: String?
+    var caseLabel = item.id
     var prompt = ""
     var access = ClaudeCommand.WriteAccess()
     var environment: [String: String] = ["POKEMATE_EVAL": "1"]
@@ -122,9 +123,11 @@ for item in cases {
             continue
         }
         domain = ReviewEval.fixtureDomain(item, fixture: fixture, map: map)
+        caseLabel = fixture.key
         if let reuse {
-            resumeId = sessions.reuseId(DomainReview.sessionKey(domain), policy: reuse, now: Date())
-            freshReason = sessions.sessions[DomainReview.sessionKey(domain)]?.freshReason
+            let decision = ReviewEval.chooseSession(&sessions, slot: DomainReview.sessionKey(domain), caseKey: SessionPolicy.jiraKey(fixture.key), policy: reuse, now: Date())
+            resumeId = decision.resumeId
+            freshReason = decision.reason
         }
         var config = PipelineConfig.load(promptsDir: Rules.promptsDir, access: [:], dir: work, helper: helper,
                                          fallbackDir: Rules.folder(.prompt, layer: .shared))
@@ -139,9 +142,12 @@ for item in cases {
         guard let target = ReviewTarget.parse(url: item.url) else { continue }
         let chosen = ReviewEval.domain(for: item, target: target, map: map, book: book)
         domain = chosen.domain
+        caseLabel = target.label
         if let reuse {
-            resumeId = sessions.reuseId(DomainReview.sessionKey(domain), policy: reuse, now: Date())
-            freshReason = sessions.sessions[DomainReview.sessionKey(domain)]?.freshReason
+            let decision = ReviewEval.chooseSession(&sessions, slot: DomainReview.sessionKey(domain),
+                                                    caseKey: SessionPolicy.prKey(owner: target.owner, repo: target.repo, number: target.number), policy: reuse, now: Date())
+            resumeId = decision.resumeId
+            freshReason = decision.reason
         }
         access = ReviewEval.access(helper: helper, dirs: [home + "/Workspace", home + "/.claude/references", notes.root] + map.knowledgePaths(for: chosen.domain))
         prompt = ReviewEval.prompt(item: item, target: target, domain: chosen.domain, why: chosen.why, source: chosen.source, notes: notes,
@@ -173,7 +179,7 @@ for item in cases {
     let totals = transcript.isEmpty ? nil : TranscriptUsage.total(Data(transcript.utf8))
     let contextAfter = totals?.lastContext ?? 0
     if reuse != nil {
-        ReviewEval.recordSession(&sessions, key: DomainReview.sessionKey(domain), sessionId: sessionId, ok: ok, caseId: item.id,
+        ReviewEval.recordSession(&sessions, key: DomainReview.sessionKey(domain), sessionId: sessionId, ok: ok, caseId: caseLabel,
                                  usage: runner.lastUsage, transcript: totals, now: Date())
         sessions.save(to: bookFile)
     }

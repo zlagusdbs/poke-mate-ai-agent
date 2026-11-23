@@ -14,6 +14,8 @@ public sealed class PipelineScript
     readonly Dictionary<string, string> sessions = new();
     readonly List<(string? Resume, string? Fresh)> runs = new();
     readonly List<string> notices = new();
+    readonly List<(string Ticket, List<string> Keys)> archived = new();
+    readonly List<(string Key, string CaseKey, string? Resume, string? Reason)> chosen = new();
 
     public bool FailPush { get; set; }
     public bool FailResume { get; set; }
@@ -28,6 +30,12 @@ public sealed class PipelineScript
     public Dictionary<string, string> Sessions { get { lock (gate) return new(sessions); } }
     public List<(string? Resume, string? Fresh)> Runs { get { lock (gate) return runs.ToList(); } }
     public List<string> Notices { get { lock (gate) return notices.ToList(); } }
+    /// 끝난 건 보관 요청 (티켓, 역할 세션 키들)
+    public List<(string Ticket, List<string> Keys)> Archived { get { lock (gate) return archived.ToList(); } }
+    /// 역할마다 고른 세션 (세션 키, 건 키, 이어 쓸 id, 새로 시작하는 이유)
+    public List<(string Key, string CaseKey, string? Resume, string? Reason)> Chosen { get { lock (gate) return chosen.ToList(); } }
+    public void Archive(string ticket, IReadOnlyList<string> keys) { lock (gate) archived.Add((ticket, keys.ToList())); }
+    public void Choose(string key, string caseKey, string? resume, string? reason) { lock (gate) chosen.Add((key, caseKey, resume, reason)); }
 
     public void Noticed(string title) { lock (gate) notices.Add(title); }
 
@@ -67,14 +75,16 @@ public static class JiraPipelineChecks
 
     const string PmDev = ", \"repo\": \"acme-sample-service\", \"branch\": \"feature/ACME-1\", \"create\": [{\"branch\": \"feature/ACME-1\", \"from\": \"origin/main\"}], \"message\": \"feat: sample change\"";
 
-    public static PipelineIO MakeIO(PipelineScript script, SessionReuse? policy = null) =>
+    public static PipelineIO MakeIO(PipelineScript script, SessionPolicy? policy = null) =>
         new(runRole: (role, prompt, resume, fresh, access) => Task.FromResult(script.Answer(role, prompt, access, resume, fresh)),
             helper: args => Task.FromResult(script.Helper(args)),
             diff: _ => Task.FromResult<string?>("diff --git a/x b/x"),
             recordSession: (key, id, _, _) => { script.Record(key, id); return Task.CompletedTask; },
             save: _ => Task.CompletedTask,
             notice: (title, _) => { script.Noticed(title); return Task.CompletedTask; },
-            policy: policy == null ? null : () => policy);
+            policy: policy == null ? null : () => policy,
+            sessionChosen: (key, caseKey, resume, reason) => { script.Choose(key, caseKey, resume, reason); return Task.CompletedTask; },
+            archiveCase: (ticket, keys) => { script.Archive(ticket, keys); return Task.CompletedTask; });
 
     static IDictionary<PipelineRole, string[]> Answers(string[]? pm = null, string[]? dev = null, string[]? tester = null, string[]? reviewer = null)
     {
@@ -202,8 +212,24 @@ public static class JiraPipelineChecks
         Check.That(done.Sessions is { Count: 4 } && done.Sessions["dev"].Id == "s-dev" && done.Sessions["pm"].ContextTokens == 0 && done.Sessions.Keys.OrderBy(k => k).SequenceEqual(new[] { "dev", "pm", "reviewer", "tester" })
                    && start.Sessions == null, "ticket-session: 티켓 상태에 역할별 세션(id·마지막 사용·문맥 토큰)이 기록됨");
         var reviewerRuns = prompts.Select((p, i) => (p.Role, Run: storyRuns[i])).Where(x => x.Role == PipelineRole.Reviewer).ToList();
-        Check.That(reviewerRuns.Count == 2 && reviewerRuns.All(x => x.Run.Resume == null && x.Run.Fresh != null) && storyRuns[4].Resume == "s-tester" && storyRuns[3].Resume == "s-dev",
-                   "ticket-session: 같은 티켓 안에서 테스터·개발·PM 은 --resume, 리뷰어는 늘 새로 (기본 설정)");
+        Check.That(reviewerRuns.Count == 2 && reviewerRuns[0].Run.Resume == null && reviewerRuns[0].Run.Fresh != null && reviewerRuns[1].Run.Resume == "s-reviewer"
+                   && storyRuns[4].Resume == "s-tester" && storyRuns[3].Resume == "s-dev",
+                   "session-policy: 같은 티켓 안에서는 리뷰어도 다른 역할과 같은 규칙으로 --resume (리뷰어 예외 없음)");
+        Check.That(story.Archived.Count == 1 && story.Archived[0].Ticket == "ACME-1"
+                   && story.Archived[0].Keys.SequenceEqual(new[] { "acme:pm", "acme:dev", "acme:tester", "acme:reviewer" }),
+                   "session-policy: 티켓이 끝나면(done) 그 건의 역할 세션 보관을 한 번 요청");
+        var chosenStory = story.Chosen;
+        Check.That(chosenStory.All(c => c.CaseKey == "jira:ACME-1") && chosenStory[0] == ("acme:pm", "jira:ACME-1", null, null)
+                   && chosenStory.Count(c => c.Resume != null) == 8,
+                   "session-policy: 고른 결과는 건 키 jira:{KEY} 로 알림 (처음은 이유 없음)");
+        var handoffs = done.Handoffs!;
+        Check.That(handoffs.Count == 12 && handoffs[0].Role == "pm" && handoffs[0].Summary.StartsWith("dev 로 넘김", StringComparison.Ordinal)
+                   && handoffs.Where(h => h.Role != "reviewer").All(h => h.Findings == null) && handoffs.Where(h => h.Role == "reviewer").All(h => h.Findings != null),
+                   "handoff: 역할이 한 차례를 마칠 때마다 인계 메모 {role, at, summary} (리뷰어만 findings)");
+        var withBlock = prompts.Select((p, i) => (p.Prompt.Contains(Handoffs.Title), storyRuns[i].Resume == null)).ToList();
+        Check.That(!withBlock[0].Item1 && withBlock.Skip(1).All(x => x.Item1 == x.Item2) && prompts[1].Prompt.Contains("- PM: dev 로 넘김")
+                   && withBlock.Count(x => x.Item1) == 3,
+                   "handoff: 인계 블록은 앞 차례가 있는 건의 새 세션에만 (처음 시작·이어 쓰는 세션에는 없음)");
         PipelineState Resumed(PipelineState from, PipelineState.StageKind stage)
         {
             var c = from.Copy();
@@ -232,28 +258,47 @@ public static class JiraPipelineChecks
         Check.That(staleScript.Runs.Count == 2 && staleScript.Runs.All(r => r.Resume == null && r.Fresh != null) && staleDone.Sessions!["dev"].Id == "s-dev",
                    "ticket-session: 같은 티켓이라도 55분이 지나거나 문맥이 12만 토큰 이상이면 새로 시작");
         var always = new PipelineScript(Answers(dev: new[] { NextBlock("pm") }, pm: new[] { NextBlock("stop") }));
-        await JiraPipeline.Run(stale, MakeIO(always, new SessionReuse(0, 0, true)), config);
+        await JiraPipeline.Run(stale, MakeIO(always, SessionPolicy.Always), config);
         Check.That(always.Runs.Select(r => r.Resume).SequenceEqual(new[] { "s-dev", "s-pm" }), "ticket-session: 분·토큰 기준을 0(끔)으로 두면 같은 티켓 안에서는 늘 이어 씀");
         var nowT = DateTimeOffset.Now;
-        var pol = new SessionReuse();
-        Check.That(new PipelineState("ACME-3", "t", "e", "acme", null, 30, nowT).ReuseSession(PipelineRole.Dev, pol, nowT) == (null, null)
-                   && stale.ReuseSession(PipelineRole.Dev, pol, nowT).Reason!.StartsWith("식음 6") && stale.ReuseSession(PipelineRole.Pm, pol, nowT).Reason == "문맥 130.0K (기준 120.0K)"
-                   && otherDone.ReuseSession(PipelineRole.Reviewer, pol, nowT) == (null, null) && otherDone.ReuseSession(PipelineRole.Dev, pol, nowT).Id == "s-dev",
-                   "ticket-session: 티켓 세션 고르기 — 없으면 (null,null), 기준에 걸리면 이유");
+        var pol = new SessionPolicy();
+        Check.That(new PipelineState("ACME-3", "t", "e", "acme", null, 30, nowT).PreviousSession(PipelineRole.Dev) == null
+                   && pol.Decide("jira:ACME-2", "dev", stale.PreviousSession(PipelineRole.Dev), nowT).Reason!.StartsWith("식음 6")
+                   && pol.Decide("jira:ACME-2", "pm", stale.PreviousSession(PipelineRole.Pm), nowT).Reason == "문맥 130.0K (기준 120.0K)"
+                   && otherDone.PreviousSession(PipelineRole.Reviewer) == null && otherDone.PreviousSession(PipelineRole.Dev) is { CaseKey: "jira:ACME-2", Id: "s-dev" },
+                   "session-policy: 티켓 세션은 진행 파일 sessions 에서 — 없으면 null, 기준에 걸리면 이유");
         var rv = Resumed(otherDone, PipelineState.StageKind.Reviewer);
         rv.RecordSession(PipelineRole.Reviewer, "s-r", null, nowT);
-        Check.That(rv.ReuseSession(PipelineRole.Reviewer, pol, nowT) == (null, SessionReuse.ReviewerReason) && rv.ReuseSession(PipelineRole.Reviewer, new SessionReuse(freshReviewer: false), nowT).Id == "s-r",
-                   "ticket-session: 리뷰어는 늘 새로 (설정을 끄면 같은 기준)");
+        Check.That(pol.Decide(rv.CaseKey, "reviewer", rv.PreviousSession(PipelineRole.Reviewer), nowT) == new SessionPolicy.Decision("s-r", null),
+                   "session-policy: 리뷰어도 같은 건 안에서는 이어 씀 (늘 새로 설정 없음)");
+
+        // 새 세션이면 그 건의 인계 메모를 "이번 건 인계" 블록으로 (리뷰어는 자기 이전 지적도)
+        var handed = Resumed(otherDone, PipelineState.StageKind.Reviewer);
+        handed.AddHandoff(PipelineRole.Reviewer, "결함:\n- pricing.py:3 음수 가격 검사 없음\n미확인(질문):\n- 할인 상한 확인", "판정: 댓글", nowT);
+        handed.AddHandoff(PipelineRole.Dev, "음수 가격 검사를 더했다", "답 본문", nowT);
+        handed.Stage = PipelineState.StageKind.Reviewer;
+        handed.Sessions!["reviewer"] = new PipelineSession("s-old", nowT.AddMinutes(-90), 1000);
+        var handScript = new PipelineScript(Answers(reviewer: new[] { NextBlock("push") }, pm: new[] { NextBlock("stop") }));
+        await JiraPipeline.Run(handed, MakeIO(handScript), config);
+        var handPrompt = handScript.Prompts[0].Prompt;
+        Check.That(handScript.Runs[0].Resume == null && handScript.Chosen[0].Reason!.StartsWith("식음 ")
+                   && handPrompt.Contains(Handoffs.Title) && handPrompt.Contains("- 개발: 음수 가격 검사를 더했다") && handPrompt.Contains(Handoffs.FindingsTitle)
+                   && handPrompt.Contains("- 결함: pricing.py:3 음수 가격 검사 없음") && handPrompt.Contains("- 미확인: 할인 상한 확인")
+                   && handPrompt.IndexOf(Handoffs.Title, StringComparison.Ordinal) < handPrompt.IndexOf("## 역할 지시", StringComparison.Ordinal)
+                   && !handPrompt.Contains(JiraPipeline.ResumeNote),
+                   "handoff: 같은 티켓을 시간 초과 뒤 새로 시작하면 역할 프롬프트 앞에 인계 블록과 리뷰어 자신의 이전 지적");
+        Check.That(!handScript.Prompts[1].Prompt.Contains(Handoffs.Title) && handScript.Runs[1].Resume == "s-pm",
+                   "handoff: 같은 실행에서 이어 쓰는 세션(PM)에는 블록 없음");
 
         // 작업 탭 기록 {도메인}:{역할}: 다른 티켓이 새로 시작하면 앞 세션은 보관하고 "새 티켓 (앞: KEY)"
         var tab = new WorkSessionBook();
         var tt = DateTimeOffset.Now;
         tab.Record("acme:dev", "s-a", "ACME-100", new RunUsage(costUSD: 1), tt);
-        Check.That(!tab.StartFresh("acme:pm", "ACME-100", null, tt) && tab.StartFresh("acme:dev", "ACME-101", null, tt)
+        Check.That(!tab.StartFresh("acme:pm", "jira:ACME-100", null, tt) && tab.StartFresh("acme:dev", "jira:ACME-101", null, tt)
                    && tab.Sessions["acme:dev"].Id == "" && tab.Sessions["acme:dev"].FreshReason == "새 티켓 (앞: ACME-100)" && tab.Archived.Select(s => s.Id).SequenceEqual(new[] { "s-a" }),
                    "ticket-session: 작업 탭 기록은 새 티켓이면 앞 세션 보관 + 이유 '새 티켓 (앞: KEY)'");
         tab.Record("acme:dev", "s-b", "ACME-101", null, tt);
-        Check.That(tab.StartFresh("acme:dev", "ACME-101", "식음 61분 (기준 55분)", tt) && tab.Sessions["acme:dev"].FreshReason == "식음 61분 (기준 55분)" && tab.Archived.Count == 2,
+        Check.That(tab.StartFresh("acme:dev", "jira:ACME-101", "식음 61분 (기준 55분)", tt) && tab.Sessions["acme:dev"].FreshReason == "식음 61분 (기준 55분)" && tab.Archived.Count == 2,
                    "ticket-session: 같은 티켓이 기준에 걸리면 그 이유 그대로 (기존 문구)");
 
         // 새 필드가 없는 옛 진행 파일도 읽고, 있으면 왕복

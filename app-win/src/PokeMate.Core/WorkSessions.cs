@@ -59,49 +59,90 @@ public sealed record WorkSession
     public override int GetHashCode() => HashCode.Combine(Id, Repo, LastUsed);
 }
 
-/// 세션을 이어 쓸지 새로 시작할지 정하는 기준 (설정의 "세션 이어 쓰기").
-public sealed record SessionReuse
+//// 자동 처리 세션을 이어 쓸지 새로 시작할지 정하는 단 하나의 규칙 (설정의 "세션 이어 쓰기": 쉰 시간·문맥 크기).
+/// 세션 단위는 작업 한 건(`jira:{KEY}`, `pr:{owner}/{repo}#{number}`)이다. 같은 건 안에서만 이어 쓰고, 건이 바뀌면 늘 새로 시작한다.
+/// 모든 자동 처리 진입점(Jira 역할 처리·GitHub 리뷰·Trial·Eval)이 `Decide` 만 부른다. 기능별 예외는 두지 않는다.
+public sealed record SessionPolicy
 {
     public const int DefaultMinutes = 55;
     public const int DefaultTokens = 120_000;
 
-    public const string ReviewerReason = "리뷰어는 늘 새로";
-
     public int IdleMinutes { get; set; }
     public long MaxTokens { get; set; }
-    public bool FreshReviewer { get; set; }
 
-    public SessionReuse(int idleMinutes = DefaultMinutes, long maxTokens = DefaultTokens, bool freshReviewer = true)
+    public SessionPolicy(int idleMinutes = DefaultMinutes, long maxTokens = DefaultTokens)
     {
         IdleMinutes = idleMinutes;
         MaxTokens = maxTokens;
-        FreshReviewer = freshReviewer;
     }
 
-    public SessionReuse(AppSettings settings)
-        : this(settings.SessionReuseMinutes, settings.SessionReuseMaxTokens, settings.ReviewerAlwaysFresh) { }
+    public SessionPolicy(AppSettings settings) : this(settings.SessionReuseMinutes, settings.SessionReuseMaxTokens) { }
 
-    public static SessionReuse Always => new(0, 0, false);
+    /// 같은 건 안에서는 늘 이어 쓰기 (둘 다 0)
+    public static SessionPolicy Always => new(0, 0);
 
-    /// 이 세션을 새로 시작해야 하면 그 이유 (이어 써도 되면 null). 0 이면 그 기준은 끈다.
-    public string? FreshReason(WorkSession session, DateTimeOffset now) =>
-        FreshReason(PipelineRoleExtensions.Split(session.Repo) is { Role: PipelineRole.Reviewer }, session.LastUsed, session.ContextTokens, now);
+    /// 그 건·역할의 이전 세션. 다른 건의 것일 수도 있다 (작업 탭 기록에서 온 것: 그때는 새로 시작하고 이유만 남는다).
+    public sealed record Previous(string CaseKey, string Id, DateTimeOffset LastUsed, long ContextTokens);
 
-    /// 티켓 하나의 역할 세션(`pipelines\{KEY}.json` 의 sessions)에 같은 기준을 쓴다.
-    public string? FreshReason(PipelineSession session, PipelineRole role, DateTimeOffset now) =>
-        FreshReason(role == PipelineRole.Reviewer, session.LastUsed, session.ContextTokens, now);
-
-    string? FreshReason(bool reviewer, DateTimeOffset lastUsed, long contextTokens, DateTimeOffset now)
+    /// 이어 쓸 세션 id (새로 시작하면 null)와 새로 시작하는 이유 (처음이면 null)
+    public sealed record Decision(string? ResumeId, string? Reason)
     {
-        if (FreshReviewer && reviewer) return ReviewerReason;
-        var idle = (int)((now - lastUsed).TotalSeconds / 60);
-        if (IdleMinutes > 0 && idle >= IdleMinutes) return $"식음 {idle}분 (기준 {IdleMinutes}분)";
-        if (MaxTokens > 0 && contextTokens >= MaxTokens) return $"문맥 {TokenFormat.Compact(contextTokens)} (기준 {TokenFormat.Compact(MaxTokens)})";
-        return null;
+        public bool Resumed => ResumeId != null;
     }
 
-    /// 같은 도메인의 앞 티켓 세션이 있는데 이 티켓은 아직 그 역할 세션이 없을 때 작업 탭에 남기는 이유
+    /// 이어 쓰기: 이전 세션이 같은 건이고, 마지막 사용이 IdleMinutes 안이고, 문맥이 MaxTokens 미만. 0 이면 그 기준은 끈다.
+    /// 다른 건의 세션은 어떤 설정에서도 이어 쓰지 않는다. `role` 은 기록용이고 판단을 바꾸지 않는다 (역할별 예외 없음).
+    public Decision Decide(string caseKey, string role, Previous? previous, DateTimeOffset now)
+    {
+        if (previous == null || previous.Id.Length == 0) return new Decision(null, null);
+        if (!SameCase(previous.CaseKey, caseKey))
+            return new Decision(null, previous.CaseKey.Length == 0 ? null : NewCaseReason(caseKey, previous.CaseKey));
+        var idle = (int)((now - previous.LastUsed).TotalSeconds / 60);
+        if (IdleMinutes > 0 && idle >= IdleMinutes) return new Decision(null, $"식음 {idle}분 (기준 {IdleMinutes}분)");
+        if (MaxTokens > 0 && previous.ContextTokens >= MaxTokens)
+            return new Decision(null, $"문맥 {TokenFormat.Compact(previous.ContextTokens)} (기준 {TokenFormat.Compact(MaxTokens)})");
+        return new Decision(previous.Id, null);
+    }
+
+    public const string JiraPrefix = "jira:";
+    public const string PrPrefix = "pr:";
+
+    /// Jira 티켓 한 건의 키: `jira:{KEY}`
+    public static string JiraKey(string ticket) => JiraPrefix + ticket;
+
+    /// PR 한 건의 키: `pr:{owner}/{repo}#{number}`
+    public static string PrKey(string owner, string repo, int number) => $"{PrPrefix}{owner}/{repo}#{number}";
+
+    /// 화면·작업 탭 기록(`keys`)에 쓰는 짧은 이름: `jira:ACME-101` → `ACME-101`, `pr:acme/svc#12` → `svc#12`. 접두어가 없으면 그대로.
+    public static string Label(string caseKey)
+    {
+        if (caseKey.StartsWith(JiraPrefix, StringComparison.Ordinal)) return caseKey[JiraPrefix.Length..];
+        if (caseKey.StartsWith(PrPrefix, StringComparison.Ordinal))
+        {
+            var rest = caseKey[PrPrefix.Length..];
+            var slash = rest.LastIndexOf('/');
+            return slash >= 0 ? rest[(slash + 1)..] : rest;
+        }
+        return caseKey;
+    }
+
+    static bool Prefixed(string key) => key.StartsWith(JiraPrefix, StringComparison.Ordinal) || key.StartsWith(PrPrefix, StringComparison.Ordinal);
+
+    /// 같은 건인지. 둘 다 접두어가 있으면 키 그대로, 한쪽이 작업 탭 기록의 짧은 이름이면 짧은 이름끼리 비교한다.
+    public static bool SameCase(string a, string b)
+    {
+        if (a == b) return true;
+        if (Prefixed(a) && Prefixed(b)) return false;
+        return Label(a) == Label(b);
+    }
+
+    /// 건이 바뀌어 새로 시작하는 이유: PR 이면 "새 PR (앞: repo#12)", 아니면 "새 티켓 (앞: ACME-101)"
+    public static string NewCaseReason(string caseKey, string previousCaseKey) =>
+        caseKey.StartsWith(PrPrefix, StringComparison.Ordinal) ? NewPrReason(Label(previousCaseKey)) : NewTicketReason(Label(previousCaseKey));
+
     public static string NewTicketReason(string previousTicket) => $"새 티켓 (앞: {previousTicket})";
+
+    public static string NewPrReason(string previousLabel) => $"새 PR (앞: {previousLabel})";
 }
 
 /// `automation\sessions.json`: 레포(또는 `{도메인}:{역할}`) → 지금 세션, 그리고 보관한 옛 세션들. 파이썬 서버(alarms.py)도 읽는다.
@@ -154,29 +195,65 @@ public sealed record WorkSessionBook
         return null;
     }
 
-    /// 이어 쓸 세션 id. 새로 시작해야 하면(기준에 걸리면) 옛 세션을 보관하고 이유를 남긴 빈 세션을 두고 null.
-    public string? ReuseId(string repo, SessionReuse policy, DateTimeOffset now)
+    /// 레포 작업 세션(알림 자동 처리의 레포 세션)을 이어 쓸 id. 레포 세션은 그 레포 자체가 한 건이다 (`SessionPolicy.Decide` 로 시간·문맥만 본다).
+    /// 새로 시작해야 하면 옛 세션을 보관하고 이유를 남긴 빈 세션을 두고 null.
+    public string? ReuseId(string repo, SessionPolicy policy, DateTimeOffset now)
     {
         if (!Sessions.TryGetValue(repo, out var s) || s.Id.Length == 0) return null;
-        if (policy.FreshReason(s, now) is not string reason) return s.Id;
+        var decision = policy.Decide(repo, "", new SessionPolicy.Previous(repo, s.Id, s.LastUsed, s.ContextTokens), now);
+        if (decision.ResumeId != null) return decision.ResumeId;
         Archived.Add(s);
-        Sessions[repo] = new WorkSession("", repo, now) { FreshReason = reason };
+        Sessions[repo] = new WorkSession("", repo, now) { FreshReason = decision.Reason };
         return null;
     }
 
-    /// 역할 세션을 새 티켓(또는 기준에 걸린 같은 티켓)이 새로 시작할 때 작업 탭 기록을 맞춘다. 앞 세션은 보관하고 이유를 남긴 빈 세션을 둔다.
-    /// `reason` 이 없고 앞 세션이 다른 티켓의 것이면 "새 티켓 (앞: KEY)". 바뀌었으면 true.
-    public bool StartFresh(string repo, string ticket, string? reason, DateTimeOffset now)
+    /// 작업 탭 칸(`{도메인}:{역할}`)의 마지막 세션: 지금 세션, 없으면(끝나 보관했으면) 가장 최근에 보관한 그 칸의 세션. 건 키는 그 세션의 마지막 `keys`.
+    public SessionPolicy.Previous? Previous(string repo)
+    {
+        WorkSession? s = Sessions.TryGetValue(repo, out var live) && live.Id.Length > 0 ? live : LastArchived(repo);
+        return s == null ? null : new SessionPolicy.Previous(s.Keys.LastOrDefault() ?? "", s.Id, s.LastUsed, s.ContextTokens);
+    }
+
+    /// 그 칸에서 가장 최근에 보관한 세션 (실행한 적 있는 것만)
+    public WorkSession? LastArchived(string repo) =>
+        Archived.Where(a => a.Repo == repo && a.Id.Length > 0).OrderBy(a => a.LastUsed).LastOrDefault();
+
+    /// 역할 세션을 새로 시작할 때 작업 탭 기록을 맞춘다. 앞 세션은 보관하고 이유를 남긴 빈 세션을 둔다. 바뀌었으면 true.
+    /// `reason` 이 없으면 그 칸의 마지막 세션(지금 것 또는 보관한 것)으로 `SessionPolicy.Decide` 가 이유를 정한다 (다른 건이면 "새 티켓 (앞: KEY)"·"새 PR (앞: repo#12)").
+    public bool StartFresh(string repo, string caseKey, string? reason, DateTimeOffset now)
     {
         Sessions.TryGetValue(repo, out var s);
         var live = s != null && s.Id.Length > 0;
-        if (reason == null && live && s!.Keys.LastOrDefault() is string previous && previous != ticket) reason = SessionReuse.NewTicketReason(previous);
+        reason ??= new SessionPolicy().Decide(caseKey, "", Previous(repo), now).Reason;
         if (!live && reason == null) return false;
+        if (!live && s != null && s.FreshReason == reason) return false;
         if (live) Archived.Add(s!);
         Sessions[repo] = new WorkSession("", repo, now) { FreshReason = reason };
         return true;
     }
 
+    /// 끝난 건(`label`: 티켓 키 또는 `repo#12`)의 역할 세션을 보관한다: 그 칸의 지금 세션이 이 건의 것이면 보관, 아직 실행하지 못한 빈 칸은 지운다.
+    /// 보관한 세션은 작업 탭 목록에서 빠지고 기록(`archived`)은 남는다. 바뀌었으면 true.
+    public bool ArchiveCase(IEnumerable<string> repos, string label)
+    {
+        var changed = false;
+        foreach (var repo in repos)
+        {
+            if (!Sessions.TryGetValue(repo, out var s)) continue;
+            if (s.Id.Length == 0)
+            {
+                Sessions.Remove(repo);
+                changed = true;
+            }
+            else if (s.Keys.LastOrDefault() == label)
+            {
+                Sessions.Remove(repo);
+                Archived.Add(s);
+                changed = true;
+            }
+        }
+        return changed;
+    }
     public void Record(string repo, string sessionId, string? key, RunUsage? usage, DateTimeOffset now)
     {
         var s = Sessions.TryGetValue(repo, out var existing) ? existing : new WorkSession(sessionId, repo, now);
