@@ -186,7 +186,11 @@ public sealed class ConnectionsView : UserControl
             resultMessage = string.Join("\n", results.Where(r => r.Status != "unavailable")
                 .Select(r => (r.System.Length == 0 ? "" : $"{r.System}: ") + r.Message));
             Render();
-            return results.All(r => r.Status is "connected" or "unavailable");
+            var failed = results.Where(r => r.Status is not ("connected" or "unavailable")).ToList();
+            if (failed.Count == 0) return null;
+            var connected = results.Count(r => r.Status == "connected");
+            var head = connected > 0 ? $"{connected}곳은 연결됐어요. 연결하지 못한 곳:" : "연결하지 못했어요.";
+            return head + "\n" + string.Join("\n", failed.Select(r => (r.System.Length == 0 ? "" : $"{r.System}: ") + r.Message));
         });
         dialog.ShowModal();
     }
@@ -208,7 +212,8 @@ sealed class LoginDialog
 {
     readonly Window window;
 
-    public LoginDialog(string title, Func<string, string, Task<bool>> submit)
+    /// `submit` 은 모두 연결되면 null, 아니면 창에 보일 실패 내용(연결된 수 + 실패한 곳과 이유)을 돌려준다.
+    public LoginDialog(string title, Func<string, string, Task<string?>> submit)
     {
         var body = new StackPanel { Margin = new Thickness(20) };
         body.Children.Add(Ui.Text(title, 15, "TextFg", FontWeights.SemiBold));
@@ -241,12 +246,12 @@ sealed class LoginDialog
         {
             working = true;
             Update();
-            var ok = await submit(username, secret);
+            var problem = await submit(username, secret);
             working = false;
             passBox.Password = "";
             secret = "";
-            if (ok) window.DialogResult = true;
-            else { failed.Visibility = Visibility.Visible; Update(); }
+            if (problem == null) window.DialogResult = true;
+            else { failed.Text = problem; failed.Visibility = Visibility.Visible; Update(); }
         }, enabled: false);
         ChatUi.Id(connect, "LoginSubmit");
         buttons.Children.Add(cancel);
