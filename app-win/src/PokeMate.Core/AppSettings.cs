@@ -44,8 +44,21 @@ public sealed record AppSettings
     public const string DefaultAssistantName = "메이트";
     public static readonly IReadOnlyList<string> DefaultAutomationRules = new[] { "commit-pr.md", "domain-knowledge.md", "production-env.md" };
 
-    /// `%USERPROFILE%\Workspace\poke-mate-ai-agent`
-    public static string DefaultRepoDir => Path.Combine(Paths.Home, "Workspace", "poke-mate-ai-agent");
+    /// 설치 스크립트가 설치 폴더에 적어 둔 저장소 위치(`repo-path.txt`)가 있으면 그것, 없으면 `%USERPROFILE%\Workspace\poke-mate-ai-agent`
+    public static string DefaultRepoDir => InstalledRepoDir() ?? Path.Combine(Paths.Home, "Workspace", "poke-mate-ai-agent");
+
+    /// 설치 폴더(실행 파일 옆)의 `repo-path.txt` 에 적힌 저장소 폴더. 파일이 없거나 그 폴더가 없으면 null.
+    public static string? InstalledRepoDir(string? baseDir = null)
+    {
+        try
+        {
+            var file = Path.Combine(baseDir ?? AppContext.BaseDirectory, "repo-path.txt");
+            if (!File.Exists(file)) return null;
+            var dir = File.ReadAllText(file).Trim();
+            return dir.Length > 0 && Directory.Exists(dir) ? dir : null;
+        }
+        catch { return null; }
+    }
     /// `%USERPROFILE%\.local\bin\claude.exe`
     public static string DefaultClaudePath => Path.Combine(Paths.Home, ".local", "bin", "claude.exe");
     /// `%USERPROFILE%\.local\bin\uv.exe` (uv 설치 스크립트의 기본 위치)
@@ -78,6 +91,10 @@ public sealed record AppSettings
 
     /// 맥에서 복사해 온 경로(`/opt/homebrew/bin/uv`, `/Users/…`, `~/Library/…`)만 Windows 기본값으로 바꾼다.
     /// `uv` 같은 PATH 이름과 상대 경로는 그대로 두고, `~/` 는 홈 폴더로 푼다.
+    /// 설정의 저장소 폴더가 없으면(저장소를 옮긴 경우) 설치 때 적어 둔 위치로 바꾼다. 그 위치도 없으면 그대로 둔다.
+    public static string MovedRepo(string repoDir, string installed) =>
+        !Directory.Exists(repoDir) && Directory.Exists(installed) ? installed : repoDir;
+
     internal static string WindowsPath(string value, string fallback)
     {
         var v = value.Trim();
@@ -105,7 +122,8 @@ public sealed class AppSettingsConverter : JsonConverter<AppSettings>
         var s = new AppSettings
         {
             AssistantName = Str("assistantName") ?? d.AssistantName,
-            RepoDir = AppSettings.WindowsPath(Str("repoDir") ?? d.RepoDir, d.RepoDir),
+            // 저장소를 옮겨 예전 폴더가 사라졌으면 설치 때 적어 둔 위치를 쓴다
+            RepoDir = AppSettings.MovedRepo(AppSettings.WindowsPath(Str("repoDir") ?? d.RepoDir, d.RepoDir), d.RepoDir),
             ClaudePath = AppSettings.WindowsPath(Str("claudePath") ?? d.ClaudePath, d.ClaudePath),
             UvPath = AppSettings.WindowsPath(Str("uvPath") ?? d.UvPath, d.UvPath),
             ReportHour = Int("reportHour") ?? d.ReportHour,

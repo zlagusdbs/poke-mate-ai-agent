@@ -21,6 +21,11 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
 Write-Host "복사 완료: $dest"
 
+# 저장소 위치를 설치 폴더에 적어 둔다. 앱은 설정의 저장소 폴더가 없을 때(처음 실행, 저장소를 옮긴 뒤) 이 위치를 쓴다.
+$repo = (Resolve-Path (Join-Path $app '..')).Path
+[IO.File]::WriteAllText((Join-Path $dest 'repo-path.txt'), $repo, (New-Object Text.UTF8Encoding $false))
+Write-Host "저장소 위치: $repo"
+
 $programs = Join-Path ([Environment]::GetFolderPath('Programs')) 'PokeMate.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $lnk = $shell.CreateShortcut($programs)
