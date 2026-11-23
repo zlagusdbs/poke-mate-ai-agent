@@ -13,9 +13,9 @@ namespace PokeMate;
 /// 모든 멤버는 UI 스레드에서 부른다. 바뀌면 PropertyChanged(Book·Running·Queued·Pipelines·Reviewing·MonthUsage·PendingSummary·RequestReset) 가 불리고,
 /// 세션 목록이 바뀌면 `Changed` 도 불린다.
 ///
-/// 레포 세션(`Process`)과 리뷰어 세션(`ProcessReview`)은 `ReuseSession(key)` 로 이어 쓸지 새로 시작할지 고른다.
-/// Jira 역할 세션은 티켓마다 따로다: `JiraPipeline` 이 티켓 진행 파일의 `sessions` 와 `PipelineIO.Policy` 로 고르고,
-/// 고른 결과를 `PipelineIO.SessionChosen` 으로 알려 작업 탭 기록(`{도메인}:{역할}`)을 맞춘다 (`ChooseRoleSession`).
+/// 자동 처리 세션은 작업 한 건마다 따로다 (Core `SessionPolicy` 하나가 정한다). Jira 역할 세션은 티켓 진행 파일(`pipelines\{KEY}.json`)의 `sessions`,
+/// 리뷰어 세션은 PR 파일(`prs\{owner}__{repo}__{n}.json`)의 `sessions` 로 고르고, 고른 결과로 작업 탭 기록(`{도메인}:{역할}`)을 맞춘다 (`ChooseRoleSession`).
+/// 끝난 건(티켓 done·stopped, PR 승인·닫힘)의 역할 세션은 보관한다. 레포 세션(`Process`)은 `ReuseSession(repo)` 로 시간·문맥만 본다.
 public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
 {
     /// 하나뿐인 센터 (맥 shared). 처음 부를 때 만든다. 앱 시작 때는 WorkSessionService 가 Start 를 부른다.
@@ -219,12 +219,12 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
 
     // MARK: 세션 고르기 (이어 쓸지 새로 시작할지)
 
-    /// 이어 쓸 Claude 세션 id (새로 시작해야 하면 null). 설정의 "세션 이어 쓰기" 기준에 걸리면 옛 세션을 보관하고 이유를 남긴 빈 세션을 둔다.
-    /// 이어 쓸지 정하는 규칙은 이 메서드와 Core 의 `WorkSessionBook.ReuseId`·`SessionReuse.FreshReason` 에만 있다.
+    /// 레포 세션을 이어 쓸 Claude 세션 id (새로 시작해야 하면 null). 설정의 "세션 이어 쓰기" 기준에 걸리면 옛 세션을 보관하고 이유를 남긴 빈 세션을 둔다.
+    /// 이어 쓸지 정하는 규칙은 Core 의 `SessionPolicy.Decide` 하나다.
     public string? ReuseSession(string key)
     {
         var before = book.Sessions.TryGetValue(key, out var s) ? s.Copy() : null;
-        var id = book.ReuseId(key, new SessionReuse(AppPaths.LoadSettings()), DateTimeOffset.Now);
+        var id = book.ReuseId(key, new SessionPolicy(AppPaths.LoadSettings()), DateTimeOffset.Now);
         var after = book.Sessions.GetValueOrDefault(key);
         if (!Equals(before, after)) Save();
         return id;
@@ -628,10 +628,15 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
                 OnPipelineNotice?.Invoke(noticeTitle, body);
                 return Task.CompletedTask;
             },
-            policy: () => new SessionReuse(AppPaths.LoadSettings()),
-            sessionChosen: (sessionKey, ticket, resumeId, reason) =>
+            policy: () => new SessionPolicy(AppPaths.LoadSettings()),
+            sessionChosen: (sessionKey, caseKey, resumeId, reason) =>
             {
-                ChooseRoleSession(sessionKey, ticket, resumeId, reason);
+                ChooseRoleSession(sessionKey, caseKey, resumeId, reason);
+                return Task.CompletedTask;
+            },
+            archiveCase: (ticket, sessionKeys) =>
+            {
+                ArchiveCase(sessionKeys, ticket);
                 return Task.CompletedTask;
             });
         var final = await JiraPipeline.Run(start, io, config);
@@ -641,11 +646,17 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         return final;
     }
 
-    /// 역할 세션을 고른 결과를 작업 탭 기록(`{도메인}:{역할}`)에 맞춘다. 이어 쓰면 그대로, 새로 시작하면 앞 세션을 보관하고 이유(새 티켓·식음·문맥)를 남긴다.
-    void ChooseRoleSession(string sessionKey, string ticket, string? resumeId, string? reason)
+    /// 역할 세션을 고른 결과를 작업 탭 기록(`{도메인}:{역할}`)에 맞춘다. 이어 쓰면 그대로, 새로 시작하면 앞 세션을 보관하고 이유(새 티켓·새 PR·식음·문맥)를 남긴다.
+    void ChooseRoleSession(string sessionKey, string caseKey, string? resumeId, string? reason)
     {
         if (resumeId != null) return;
-        if (book.StartFresh(sessionKey, ticket, reason, DateTimeOffset.Now)) Save();
+        if (book.StartFresh(sessionKey, caseKey, reason, DateTimeOffset.Now)) Save();
+    }
+
+    /// 끝난 건의 역할 세션을 보관한다 (작업 탭 목록에서 빠지고 기록은 남는다)
+    void ArchiveCase(IReadOnlyList<string> sessionKeys, string label)
+    {
+        if (book.ArchiveCase(sessionKeys, label)) Save();
     }
 
     void RecordRoleSession(string sessionKey, string id, string ticket, RunUsage? usage)
@@ -765,7 +776,12 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         SetRunning(domain, label);
         SetReviewing(domain, $"{label} · {why}");
         var key = DomainReview.SessionKey(domain);
-        var sessionId = ReuseSession(key);
+        // 세션은 PR 한 건마다 (PR 파일의 sessions). 새로 시작하면 작업 탭 칸의 앞 세션은 보관하고 이유를 남긴다.
+        var (review, decision) = ReviewCase.Begin(target, domain, new SessionPolicy(AppPaths.LoadSettings()), null, DateTimeOffset.Now);
+        review.Save();
+        var sessionId = decision.ResumeId;
+        var freshId = sessionId == null ? Guid.NewGuid().ToString().ToLowerInvariant() : null;
+        if (sessionId == null) ChooseRoleSession(key, review.Key, null, decision.Reason);
         var map = DomainMap.Load();
         var notes = DomainNotes.Load();
         var dirs = access.Dirs.ToList();
@@ -773,15 +789,17 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         var runAccess = new ClaudeCommand.WriteAccess(access.Tools, dirs);
         var helper = PipelineAccess.Helper(AppPaths.LoadSettings());
         var prompt = DomainReview.ReviewPrompt(target, domain, why, source, sessionId == null, notes, helper,
-                                               WithKnowledge(context, map.KnowledgeText(domain)).Replace("{{helper}}", helper, StringComparison.Ordinal));
-        var (response, usage) = await RunOnce(chat, $"{title} · {key}", prompt, runAccess, alarm.AutomationTimeout, sessionId, quiet: false,
+                                               WithKnowledge(context, map.KnowledgeText(domain)).Replace("{{helper}}", helper, StringComparison.Ordinal),
+                                               review.HandoffBlock(decision));
+        var (response, usage) = await RunOnce(chat, $"{title} · {key}", prompt, runAccess, alarm.AutomationTimeout, sessionId, freshId, quiet: false,
                                               extraEnvironment: new Dictionary<string, string> { ["POKEMATE_REVIEW_REPO"] = target.FullName });
-        if (response is ClaudeResponse.Success { SessionId.Length: > 0 } ok)
-            book.Record(key, ok.SessionId, target.Label, usage, DateTimeOffset.Now);
-        else if (usage != null && sessionId != null)
-            book.Record(key, sessionId, target.Label, usage, DateTimeOffset.Now);
+        var usedId = response is ClaudeResponse.Success { SessionId.Length: > 0 } ok ? ok.SessionId : usage != null ? sessionId ?? freshId : null;
+        if (usedId != null) book.Record(key, usedId, target.Label, usage, DateTimeOffset.Now);
+        var done = review.Finish(usedId, usage, (response as ClaudeResponse.Success)?.Text, DateTimeOffset.Now);
+        review.Save();
         RefreshUsage(key);
         CheckAlert(key);
+        if (done != null) book.ArchiveCase(new[] { key }, target.Label);
         Save();
         RefreshMonth();
         SetRunning(domain, null);

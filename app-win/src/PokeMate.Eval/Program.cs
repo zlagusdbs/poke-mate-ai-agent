@@ -13,7 +13,7 @@ var rest = new Queue<string>(args);
 var only = new List<string>();
 string? outDir = null;
 var casesFile = Path.Combine(settings.RepoDir, "local", "eval", "reviews.json");
-SessionReuse? reuse = null;
+SessionPolicy? reuse = null;
 while (rest.Count > 0)
 {
     var arg = rest.Dequeue();
@@ -36,7 +36,7 @@ while (rest.Count > 0)
         case "-h":
         case "--help":
             Console.WriteLine("usage: PokeMate.Eval [cases.json] [--case id]... [--out 결과 폴더] [--reuse always|default|분,토큰]");
-            Console.WriteLine("  --reuse 를 주면 문제를 차례로 돌리며 실제처럼 {도메인}:reviewer 세션을 그 규칙으로 이어 쓴다. 없으면 문제마다 새 세션");
+            Console.WriteLine("  --reuse 를 주면 앱과 같은 세션 규칙(SessionPolicy)으로 고른다: 같은 건(같은 PR·같은 가상 티켓)만 그 기준으로 이어 쓰고 다른 건은 새로. 없으면 문제마다 새 세션");
             return 0;
         default:
             casesFile = arg;
@@ -141,6 +141,7 @@ foreach (var item in cases)
     var sessionId = Guid.NewGuid().ToString().ToLowerInvariant();
     string? resumeId = null;
     string? freshReason = null;
+    var caseLabel = item.Id;
     var prompt = "";
     var access = new ClaudeCommand.WriteAccess();
     var environment = new Dictionary<string, string> { ["POKEMATE_EVAL"] = "1" };
@@ -159,10 +160,11 @@ foreach (var item in cases)
             continue;
         }
         domain = ReviewEval.FixtureDomain(item, fixture, map);
+        caseLabel = fixture.Key;
         if (reuse != null)
         {
-            resumeId = sessions.ReuseId(DomainReview.SessionKey(domain), reuse, DateTimeOffset.Now);
-            freshReason = sessions.Sessions.GetValueOrDefault(DomainReview.SessionKey(domain))?.FreshReason;
+            var decision = ReviewEval.ChooseSession(sessions, DomainReview.SessionKey(domain), SessionPolicy.JiraKey(fixture.Key), reuse, DateTimeOffset.Now);
+            (resumeId, freshReason) = (decision.ResumeId, decision.Reason);
         }
         var config = PipelineConfig.Load(Rules.PromptsDir, new Dictionary<PipelineRole, ClaudeCommand.WriteAccess>(), work, helper,
                                          Rules.Folder(Rules.Kind.Prompt, Rules.Layer.Shared));
@@ -180,10 +182,11 @@ foreach (var item in cases)
         if (ReviewTarget.Parse(item.Url) is not { } target) continue;
         var chosen = ReviewEval.Domain(item, target, map, domainBook);
         domain = chosen.Domain;
+        caseLabel = target.Label;
         if (reuse != null)
         {
-            resumeId = sessions.ReuseId(DomainReview.SessionKey(domain), reuse, DateTimeOffset.Now);
-            freshReason = sessions.Sessions.GetValueOrDefault(DomainReview.SessionKey(domain))?.FreshReason;
+            var decision = ReviewEval.ChooseSession(sessions, DomainReview.SessionKey(domain), SessionPolicy.PrKey(target.Owner, target.Repo, target.Number), reuse, DateTimeOffset.Now);
+            (resumeId, freshReason) = (decision.ResumeId, decision.Reason);
         }
         var dirs = new List<string> { Path.Combine(home, "Workspace"), Path.Combine(home, ".claude", "references"), notes.Root };
         dirs.AddRange(map.KnowledgePaths(chosen.Domain));
@@ -219,7 +222,7 @@ foreach (var item in cases)
     var contextAfter = totals?.LastContext ?? 0;
     if (reuse != null)
     {
-        ReviewEval.RecordSession(sessions, DomainReview.SessionKey(domain), sessionId, ok, item.Id, runner.LastUsage, totals, DateTimeOffset.Now);
+        ReviewEval.RecordSession(sessions, DomainReview.SessionKey(domain), sessionId, ok, caseLabel, runner.LastUsage, totals, DateTimeOffset.Now);
         sessions.Save(bookFile);
     }
     var cost = runner.LastUsage?.CostUSD ?? 0;
