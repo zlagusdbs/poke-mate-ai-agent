@@ -187,6 +187,28 @@ public struct ReviewCase: Codable, Equatable, Sendable {
         updatedAt = now
     }
 
+    enum CodingKeys: String, CodingKey {
+        case key, owner, repo, number, url, domain, status, sessions, handoffs, archivedAt, createdAt, updatedAt
+    }
+
+    /// `status` 가 없는 파일(손으로 고친 파일 등)도 읽는다. Windows 와 같게 open 으로 본다.
+    /// (자동 생성 디코더는 `= .open` 기본값을 쓰지 않아, 읽기에 실패하면 새 파일로 덮어써 세션·인계 메모를 잃는다.)
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        owner = try c.decode(String.self, forKey: .owner)
+        repo = try c.decode(String.self, forKey: .repo)
+        number = try c.decode(Int.self, forKey: .number)
+        url = try c.decode(String.self, forKey: .url)
+        domain = try c.decode(String.self, forKey: .domain)
+        status = try c.decodeIfPresent(Status.self, forKey: .status) ?? .open
+        sessions = try c.decodeIfPresent([String: PipelineSession].self, forKey: .sessions)
+        handoffs = try c.decodeIfPresent([CaseHandoff].self, forKey: .handoffs)
+        archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+    }
+
     /// 작업 탭 기록(`keys`)에 쓰는 이름 `repo#12`
     public var label: String { "\(repo)#\(number)" }
 
