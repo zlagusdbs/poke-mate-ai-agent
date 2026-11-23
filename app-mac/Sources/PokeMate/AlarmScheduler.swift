@@ -57,6 +57,11 @@ final class AlarmScheduler {
             model.markRunning(alarm.id)
             Task { [notifier, reminders, model] in
                 let result = await ShellCommand.run(command)
+                // 성공했는데 아무것도 출력하지 않으면 알릴 게 없다는 뜻이다 (예: worklog 가 HR 근무시간과 맞는 날). 알림 없이 기록만 남긴다.
+                if result.ok && result.tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    model.markDone(alarm.id, "알릴 것 없음")
+                    return
+                }
                 let body = result.tail.isEmpty ? (result.ok ? "끝났어요" : "종료 코드 \(result.exitCode)") : result.tail
                 let title = result.ok ? "🔔 \(alarm.title)" : "🔔 \(alarm.title) 실패"
                 if alarm.toMac { notifier.send(title: title, body: body) }

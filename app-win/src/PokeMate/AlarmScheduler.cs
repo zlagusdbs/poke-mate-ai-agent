@@ -120,6 +120,12 @@ public sealed class AlarmScheduler : IAppService
     async Task RunCommand(Alarm alarm, string command)
     {
         var result = await ShellCommand.Run(command);
+        // 성공했는데 아무것도 출력하지 않으면 알릴 게 없다는 뜻이다 (예: worklog 가 HR 근무시간과 맞는 날). 알림 없이 기록만 남긴다.
+        if (result.Ok && result.Tail.Trim().Length == 0)
+        {
+            model.MarkDone(alarm.Id, "알릴 것 없음");
+            return;
+        }
         var summary = result.Ok ? "끝났어요" : $"종료 코드 {result.ExitCode}";
         var body = result.Tail.Length == 0 ? summary : result.Tail;
         var title = result.Ok ? $"🔔 {alarm.Title}" : $"🔔 {alarm.Title} 실패";

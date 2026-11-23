@@ -194,6 +194,7 @@ uv --directory <저장소>/mcp-server run --quiet pokemate auto <하위명령> [
 | `github-check` | 새 리뷰 요청 PR 확인, 새로 생기면 Teams 카드 |
 | `summary` | 하루 요약 카드 (예약 작업·Jira·GitHub) |
 | `worklog-check` | 직전 근무일까지 이번 달 근무시간 기록이 모자란 날 확인, 있으면 Teams 카드 (`--hours`, `--today`, `--dry-run`) |
+| `workday-check` | 직전 근무일의 HR 근무시간과 내 Jira worklog 합계가 다르면 차이를 출력, 같으면 출력 없음(알람이 조용히 넘어감) (`--today`, `--verbose`) |
 | `poll` | Jira·GitHub 새 일감 확인 후 Claude 실행 (근무 시간에만, `--force`, `--only`, `--dry-run`) |
 | `git-read` | 작업 폴더 바로 아래 레포에서 읽기 전용 git 명령만 |
 | `create-branch` | `feature/...` 브랜치 만들고 push (이미 있으면 안 만듦, force 없음) |

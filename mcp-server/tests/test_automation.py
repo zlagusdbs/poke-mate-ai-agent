@@ -783,3 +783,44 @@ def test_shell_command_windows_skips_windowsapps_wsl(monkeypatch):
     assert automation._shell_command("echo hi") == ["cmd", "/c", "echo hi"]
     monkeypatch.setattr(automation.shutil, "which", lambda name: r"C:\Users\u\AppData\Local\Microsoft\WINDOWSAPPS\bash.exe")
     assert automation._shell_command("echo hi") == ["cmd", "/c", "echo hi"]
+
+
+def _workday(monkeypatch, result):
+    seen = []
+    monkeypatch.setattr(automation, "work_day", lambda date: seen.append(date) or {"date": date, **result})
+    return seen
+
+
+def test_workday_check_quiet_when_match(env, monkeypatch, capsys):
+    fake, _, _ = env
+    fake.on(lambda c: c[0] == "curl", b"[]")
+    seen = _workday(monkeypatch, {"status": "match", "gapMinutes": 0, "hr": {"start": "09:00", "end": "18:00", "minutes": 480, "dayOff": False},
+                                  "worklog": {"minutes": 480, "items": []}})
+    assert run("workday-check", "--today", "2026-11-23") == 0
+    assert seen == ["2026-11-20"]   # 월요일이면 지난 금요일
+    assert capsys.readouterr().out == ""
+
+
+def test_workday_check_reports_gap(env, monkeypatch, capsys):
+    fake, _, _ = env
+    fake.on(lambda c: c[0] == "curl", b"[]")
+    _workday(monkeypatch, {"status": "short", "gapMinutes": 90, "hr": {"start": "09:00", "end": "18:00", "minutes": 480, "dayOff": False},
+                           "worklog": {"minutes": 390, "items": [{"issueKey": "A-1", "seconds": 3600}, {"issueKey": "B-2", "seconds": 18000},
+                                                                 {"issueKey": "A-1", "seconds": 1800}]}})
+    assert run("workday-check", "--today", "2026-11-18") == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "⚠️ 11/17(화) worklog 1시간 30분 모자람"
+    assert out[1] == "HR 09:00~18:00 8시간 · worklog 6시간 30분"
+    assert out[2:] == ["B-2 5시간", "A-1 1시간 30분"]
+
+
+def test_workday_check_over_and_unknown(env, monkeypatch, capsys):
+    fake, _, _ = env
+    fake.on(lambda c: c[0] == "curl", b"[]")
+    _workday(monkeypatch, {"status": "over", "gapMinutes": -30, "hr": {"minutes": 0, "dayOff": True}, "worklog": {"minutes": 30, "items": []}})
+    assert run("workday-check", "--today", "2026-11-18") == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "⚠️ 11/17(화) worklog 30분 많음" and out[1] == "HR 휴가 · worklog 30분" and out[2] == "worklog 기록 없음"
+    _workday(monkeypatch, {"status": "unknown", "gapMinutes": None, "hr": None, "worklog": None, "errors": ["not_connected"]})
+    assert run("workday-check", "--today", "2026-11-18") == 1
+    assert capsys.readouterr().out.strip() == "❓ 11/17(화) 비교 못 함: not_connected"
