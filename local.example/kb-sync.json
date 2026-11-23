@@ -1,0 +1,15 @@
+{
+  "target": {"host": "github.com", "repo": "my-account/second-brain", "base": "main"},
+  "domains": {"acme": "acme-kb"},
+  "kbs": {
+    "acme-kb": {
+      "dest": "resources/acme",
+      "keep": ["README.md", ".sync.json"],
+      "sources": [
+        {"name": "acme-kb", "host": "github.example.com", "repo": "team/acme-kb",
+         "paths": ["docs/"], "into": "", "onlyExt": [".md"], "exclude": ["docs/raw/"], "excludeDirs": ["_scan"],
+         "base": "abc1234"}
+      ]
+    }
+  }
+}
