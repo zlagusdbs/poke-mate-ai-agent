@@ -145,6 +145,15 @@ GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + �
 3. **도메인 노트 (데스크톱과 같이 쓴다)**: 노트 폴더(기본 `~/.claude/references/notes`, 설정 `domainNotesDir`) 아래 `{도메인}/checklist.md`(그 도메인을 건드릴 때 반드시 답할 질문, 사람이 확정)와 `{도메인}/notes.md`(코드·문서로 확인한 사실, 종류별 절: 용어집·업무 규칙·장애·함정·결정·동작). `{도메인}/maps/{주제}.md` 는 여러 저장소·문서를 읽은 건 뒤에 남기는 지도(관련 저장소·호출 흐름·데이터 위치·읽은 문서를 위치 중심으로)다. 앱은 안내 줄에 지도 주제 목록(최대 20개)을 넣어 주제가 맞으면 먼저 읽게 한다. 자동 실행은 이 폴더를 읽기만 하고, 쓰기는 `pokemate auto domain-note --kind …`·`domain-map` 으로만 한다(파일 직접 편집은 막힌다. git 은 부르지 않으니 노트 폴더가 Git 저장소면 커밋은 사람이 한다). 노트 폴더가 심볼릭 링크면 앱이 실제 경로로 풀어 읽기 폴더에 넣는다(Claude 권한은 실제 경로로 판단). 도메인 폴더가 없으면 helper 가 빈 틀을 만들고 결과·알림에 "점검표가 아직 없음"을 남긴다. 쓰는 규칙은 노트 폴더의 `README.md`.
 4. **리뷰 절차는 스킬이 원본**: 판단(깊이 → 지식 읽기 → 코드 읽기 → 점검표 답하기 → 후보 분류 → 판정 → 결과 문서 → 노트)은 홈의 `domain-review` 스킬(`~/.claude/skills/domain-review`)을 그대로 따른다. 데스크톱에서 리뷰할 때와 같은 스킬이다. 프롬프트(`github-review`·`jira-reviewer`)는 PokeMate 고유 단계(확인·알림·`gh-review` 등록·`review-state`, 명령 사용법)만 정한다. 결함이나 미확인이 하나라도 있으면 승인하지 않고 질문을 담은 댓글 리뷰로 올린다. 스킬은 앱이 홈 스킬을 작업 폴더에 연결할 때(실행마다) 같이 연결되고, 허용 목록에 `Skill(domain-review)` 가 있어야 한다.
 5. **로컬 레포가 없을 때**: `pokemate auto gh-file --repo … --ref … --path …` 로 PR 저장소 파일을 읽는다(읽기 전용, 리뷰 중에는 그 PR 저장소만).
+6. **위키·관련 저장소**: 위키는 도메인 키워드로 `wiki_search` 해서 맞는 페이지만 읽는다. diff 만으로 판단이 안 되거나 깊게 리뷰할 때는 바뀐 API·테이블·캐시 키를 쓰는 다른 저장소를 `~/Workspace` 아래에서 읽고, 없는 저장소는 결과 문서 "확인한 범위" 에 적는다.
+7. **팀 KB 스냅샷 갱신 (`kb-sync`)**: 리뷰가 끝나면 `pokemate auto kb-sync --domain {도메인}` 을 한 번 실행한다. 사내 GitHub 의 팀 KB 가 개인 second-brain 저장소의 스냅샷(`resources/{KB}/`)보다 새로우면 스냅샷을 맞추고 갱신 PR 을 올린다. 설정은 `local/kb-sync.json`(예시 `local.example/kb-sync.json`).
+   - `target`: second-brain 저장소(`host`·`repo`·`base`). `domains`: 도메인 → KB 이름. `kbs.{KB}`: `dest`(스냅샷 폴더), `keep`(고치지 않을 파일, 기본 `README.md`·`.sync.json`), `sources`(원본마다 `name`·`host`·`repo`·`paths`(가져올 경로, 비우면 전체)·`into`(스냅샷 안 하위 폴더)·`onlyExt`·`exclude`·`excludeDirs`·`base`(처음 기준 커밋)).
+   - 원본마다 마지막으로 가져온 커밋(`{dest}/.sync.json`, 없으면 `base`) 이후 바뀐 파일만 반영한다. 손으로 더 가린 예전 파일을 덮어쓰지 않기 위해서다.
+   - 반영하는 글은 가린다: IP(루프백·버전 번호처럼 보이는 것 제외), 메일 주소, 전화번호, `PWD=`·`UID=`·`password:` 형식의 값(`@변수`·`{자리표시}`·코드 대입은 제외). 예전에 손으로 가린 곳이 있던 파일과 비밀번호·계정 낱말이 남은 파일은 PR 본문의 "머지 전에 사람이 확인할 파일" 에 경로만 적는다.
+   - 브랜치는 `hotfix/{main 에 들어간 마지막 버전의 minor+1}/kb-{KB}` (main 에서), PR 은 main 으로, Assignee 는 나. 같은 KB 의 갱신 PR 이 열려 있으면 새로 만들지 않고 그 브랜치에 커밋하고 PR 에 댓글로 바뀐 내용을 남긴다. 머지는 사람이 한다.
+   - 원본·대상 저장소는 데이터 폴더 `automation/kb-sync/` 에 따로 clone 해 둔다(원본은 blobless). 사람이 쓰는 체크아웃은 건드리지 않는다. git 인증은 `gh auth git-credential` 이라 `gh auth login` 이 두 호스트 모두 되어 있어야 한다.
+   - `--dry-run` 은 커밋·push·PR 없이 바뀔 파일과 PR 본문만 출력한다. 리뷰 기준 문제 평가(`POKEMATE_EVAL=1`)에서는 막힌다.
+   - 허용 목록(`write-tools.json`)에 `Bash({helper} kb-sync:*)` 가 있어야 한다.
 
 ### 리뷰 기준 문제 묶음 (수준 확인)
 
