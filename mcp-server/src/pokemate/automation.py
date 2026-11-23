@@ -21,6 +21,7 @@ from .credentials import data_dir
 from .deploy_client import DeployClient
 from .errors import PokeMateError
 from .jira_client import AUTO_COMMENT_PREFIX, QUESTION_PREFIX, JiraClient
+from .kb_sync import cmd_kb_sync
 from .trial import FakeJira, overlay, trial_dir
 
 HOME = os.path.expanduser("~")
@@ -1622,6 +1623,13 @@ def main(argv=None):
     es.add_argument("--label", help="표 제목에 붙일 이름 (예: 데스크톱)")
     es.add_argument("--out", help="score 파일을 쓸 폴더 (기본: 결과 폴더)")
     es.set_defaults(func=cmd_eval_score)
+
+    ks = sub.add_parser("kb-sync", help="팀 KB 원본이 바뀌었으면 second-brain 스냅샷 갱신 PR 을 올림 (local/kb-sync.json), 결과 JSON", description="팀 KB 원본(사내 GitHub)이 스냅샷 이후 바뀌었으면 second-brain 의 스냅샷 폴더를 맞추고 hotfix 브랜치로 main 에 PR 을 올린다. 같은 KB 의 열린 갱신 PR 이 있으면 거기에 이어 올린다. 바뀐 게 없으면 아무것도 하지 않는다")
+    ks.add_argument("--domain", help="도메인 이름 (kb-sync.json 의 domains 로 KB 를 고름, 없으면 no-kb)")
+    ks.add_argument("--kb", help="KB 이름 (kb-sync.json 의 kbs 키). --domain 대신")
+    ks.add_argument("--dry-run", action="store_true", help="커밋·push·PR 없이 바뀔 내용만 출력")
+    ks.add_argument("--config", help="설정 파일 (기본 local/kb-sync.json)")
+    ks.set_defaults(func=cmd_kb_sync)
 
     args = p.parse_args(argv)
     blocked = eval_blocked(args)
