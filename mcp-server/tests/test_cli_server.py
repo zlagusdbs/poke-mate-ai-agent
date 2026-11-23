@@ -187,3 +187,19 @@ def test_jira_worklog_cli(monkeypatch):
     body = json.dumps({"issueKey": "A-1", "started": "2026-10-22T10:00:00.000+0900", "timeSpentSeconds": 3600})
     assert cli.main(["jira", "worklog"], stdin=io.StringIO(body), stdout=out) == 0
     assert json.loads(out.getvalue())["issueKey"] == "A-1"
+
+
+def test_utf8_stdio_on_windows(monkeypatch):
+    import io
+    import sys
+    import pokemate
+    streams = [io.TextIOWrapper(io.BytesIO(), encoding="cp949") for _ in range(3)]
+    monkeypatch.setattr(sys, "platform", "darwin")
+    pokemate._utf8_stdio(streams)
+    assert [s.encoding for s in streams] == ["cp949"] * 3          # 맥은 건드리지 않는다
+    monkeypatch.setattr(sys, "platform", "win32")
+    pokemate._utf8_stdio(streams)
+    assert [s.encoding for s in streams] == ["utf-8"] * 3
+    streams[1].write("연결됐어요")
+    streams[1].flush()
+    assert streams[1].buffer.getvalue() == "연결됐어요".encode("utf-8")
