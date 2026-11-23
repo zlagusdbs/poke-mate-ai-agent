@@ -128,6 +128,19 @@ final class AppModel: ObservableObject {
         for j in alarms.indices where alarms[j].group == name { alarms[j].group = nil }
     }
 
+    /// 그룹 순서 (alarm-groups.json 배열 순서). 끌어다 놓기: target 자리로, nil 이면 맨 끝으로.
+    func moveGroup(_ name: String, to target: String?) {
+        let next = GroupOrder.move(alarmGroups, name, to: target)
+        if next != alarmGroups { alarmGroups = next }
+    }
+
+    func canShiftGroup(_ name: String, up: Bool) -> Bool { GroupOrder.canShift(alarmGroups, name, up: up) }
+
+    func shiftGroup(_ name: String, up: Bool) {
+        let next = GroupOrder.shift(alarmGroups, name, up: up)
+        if next != alarmGroups { alarmGroups = next }
+    }
+
     /// 끌어다 놓기: 알림을 그룹으로 옮긴다 (nil 이면 그룹 없음).
     func reorder(_ id: UUID, to group: String?, before target: UUID?) {
         let next = AlarmOrder.move(alarms, id: id, to: group, before: target, groups: alarmGroups)

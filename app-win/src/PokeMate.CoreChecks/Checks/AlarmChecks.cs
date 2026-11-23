@@ -96,6 +96,15 @@ public static class AlarmChecks
         Check.That(Titles(up).SequenceEqual(new[] { "a", "d", "c", "b", "e" }) && up.Select(i => i.Enabled).SequenceEqual(list.Select(i => i.Enabled)),
                    "order: 위로 옮기기는 같은 그룹 앞 알람과 자리 바꿈, 켜짐 그대로");
         Check.That(Titles(RoundTrip(up)).SequenceEqual(new[] { "a", "d", "c", "b", "e" }), "order: 순서는 파일 배열 순서로 저장");
+        // 그룹 순서 (alarm-groups.json 배열 순서)
+        var gs = new[] { "A", "B", "C", "D" };
+        Check.That(GroupOrder.Move(gs, "D", "B").SequenceEqual(new[] { "A", "D", "B", "C" }), "group order: 위로 끌면 놓은 그룹 앞으로");
+        Check.That(GroupOrder.Move(gs, "A", "C").SequenceEqual(new[] { "B", "C", "A", "D" }), "group order: 아래로 끌면 놓은 그룹 뒤로");
+        Check.That(GroupOrder.Move(gs, "B", null).SequenceEqual(new[] { "A", "C", "D", "B" }), "group order: 그룹 없음에 놓으면 맨 끝으로");
+        Check.That(GroupOrder.Move(gs, "B", "B").SequenceEqual(gs) && GroupOrder.Move(gs, "X", "A").SequenceEqual(gs) && GroupOrder.Move(gs, "A", "X").SequenceEqual(gs), "group order: 제자리·없는 그룹은 그대로");
+        Check.That(GroupOrder.Shift(gs, "C", true).SequenceEqual(new[] { "A", "C", "B", "D" }) && GroupOrder.Shift(gs, "C", false).SequenceEqual(new[] { "A", "B", "D", "C" }), "group order: 위로/아래로 옮기기는 이웃과 자리 바꿈");
+        Check.That(!GroupOrder.CanShift(gs, "A", true) && !GroupOrder.CanShift(gs, "D", false) && GroupOrder.Shift(gs, "A", true).SequenceEqual(gs), "group order: 맨 위·맨 아래는 더 못 옮김");
+        // 저장은 AlarmStore.SaveGroups(실제 local 폴더)를 쓰므로 여기서 부르지 않는다. 파일 저장은 앱에서 확인한다.
         const string oldOrder = """[{"id":"6F1D6F5E-0000-0000-0000-00000000000A","title":"2","prompt":"","hour":9,"minute":0,"repeatRule":{"daily":{}},"enabled":true},{"id":"6F1D6F5E-0000-0000-0000-00000000000B","title":"1","prompt":"","hour":8,"minute":0,"repeatRule":{"daily":{}},"enabled":true}]""";
         Check.That(Titles(Json.Deserialize<List<Alarm>>(oldOrder)!).SequenceEqual(new[] { "2", "1" }), "order: 예전 파일은 지금 순서 그대로");
         Check.That(Alarm.DisplayCommand("uv --directory /Users/u/Workspace/poke-mate-ai-agent/mcp-server run --quiet pokemate auto worklog-check", "/Users/u") == "pokemate auto worklog-check",

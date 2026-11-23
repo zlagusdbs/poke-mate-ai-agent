@@ -88,6 +88,7 @@ public sealed class WorkSessionsView : UserControl
         buttons.Children.Add(plain);
         buttons.Children.Add(summary);
         body.Children.Add(buttons);
+        EditorStyle.ButtonKeys(window, new[] { cancel, plain, summary }, 2);
         EditorStyle.ShowModal(window);
         if (carry is bool carrySummary)
         {
