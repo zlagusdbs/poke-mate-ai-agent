@@ -142,6 +142,9 @@ extension AlarmsView {
                 Button("모두 켜기") { for alarm in group.alarms { setEnabled(alarm.id, true) } }
                 Button("모두 끄기") { for alarm in group.alarms { setEnabled(alarm.id, false) } }
                 Divider()
+                Button("위로 옮기기") { model.shiftGroup(group.name, up: true) }.disabled(!model.canShiftGroup(group.name, up: true))
+                Button("아래로 옮기기") { model.shiftGroup(group.name, up: false) }.disabled(!model.canShiftGroup(group.name, up: false))
+                Divider()
                 Button("이름 바꾸기") { groupName = group.name; naming = GroupNaming(old: group.name) }
                 Button("그룹 삭제", role: .destructive) { deletingGroup = group.name }
             }

@@ -29,6 +29,8 @@ public partial class App : Application
     List<IAppService> services = new();
     Ui.Debounce? iconRedraw;
     bool quitting;
+    /// 끝난 뒤 앱을 다시 띄운다 (트레이 메뉴 "재시작")
+    bool restarting;
 
     public TrayIcon? Tray => tray;
     public HotkeyManager? Hotkeys => hotkey;
@@ -86,7 +88,8 @@ public partial class App : Application
             settings: () => popover.ShowSettings(),
             togglePin: () => PopoverPin.Shared.Pinned = !PopoverPin.Shared.Pinned,
             isPinned: () => PopoverPin.Shared.Pinned,
-            quit: RequestQuit);
+            restart: () => RequestQuit(restart: true),
+            quit: () => RequestQuit());
         Notifier.Attach(tray);
 
         hotkey = new HotkeyManager();
@@ -161,8 +164,8 @@ public partial class App : Application
 
     // MARK: 끝내기 (맥 applicationShouldTerminate)
 
-    /// 처리 중인 일이 있으면 물어본 뒤 끈다
-    public void RequestQuit()
+    /// 처리 중인 일이 있으면 물어본 뒤 끈다. restart 면 끝난 뒤 다시 띄운다.
+    public void RequestQuit(bool restart = false)
     {
         if (quitting) return;
         if (model != null && !quitting)
@@ -195,6 +198,7 @@ public partial class App : Application
             }
         }
         quitting = true;
+        restarting = restart;
         Shutdown();
     }
 
@@ -219,6 +223,12 @@ public partial class App : Application
         {
             try { mutex.ReleaseMutex(); } catch { }
             mutex.Dispose();
+        }
+        // 한 개만 뜨게 하는 Mutex 를 놓은 뒤에 새 앱을 띄워야 새 앱이 첫 앱이 된다
+        if (restarting && Environment.ProcessPath is { } path)
+        {
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = false, WorkingDirectory = AppContext.BaseDirectory }); }
+            catch (Exception ex) { Log($"다시 띄우지 못했어요: {ex.Message}"); }
         }
         base.OnExit(e);
     }

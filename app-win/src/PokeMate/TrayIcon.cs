@@ -5,7 +5,7 @@ using Drawing = System.Drawing;
 
 namespace PokeMate;
 
-/// 트레이 아이콘 (`NotifyIcon`). 키우는 포켓몬 그림, 툴팁은 토큰 요약, 오른쪽 클릭 메뉴 (열기·설정·고정·끝내기).
+/// 트레이 아이콘 (`NotifyIcon`). 키우는 포켓몬 그림, 툴팁은 토큰 요약, 오른쪽 클릭 메뉴 (열기·설정·고정·재시작·끝내기).
 /// 왼쪽 클릭은 Toggle, 풍선 알림은 Notifier 가 ShowBalloon 으로 쓴다.
 public sealed class TrayIcon : IDisposable
 {
@@ -22,16 +22,18 @@ public sealed class TrayIcon : IDisposable
     /// 풍선 알림이 사라졌을 때 (눌러서든 시간이 지나서든)
     public event Action? BalloonClosed;
 
-    public TrayIcon(Action toggle, Action open, Action settings, Action togglePin, Func<bool> isPinned, Action quit)
+    public TrayIcon(Action toggle, Action open, Action settings, Action togglePin, Func<bool> isPinned, Action restart, Action quit)
     {
         var openItem = new WinForms.ToolStripMenuItem("열기");
         openItem.Click += (_, _) => open();
         var settingsItem = new WinForms.ToolStripMenuItem("설정");
         settingsItem.Click += (_, _) => settings();
         pinItem.Click += (_, _) => togglePin();
+        var restartItem = new WinForms.ToolStripMenuItem("재시작");
+        restartItem.Click += (_, _) => restart();
         var quitItem = new WinForms.ToolStripMenuItem("끝내기");
         quitItem.Click += (_, _) => quit();
-        menu.Items.AddRange(new WinForms.ToolStripItem[] { openItem, settingsItem, pinItem, new WinForms.ToolStripSeparator(), quitItem });
+        menu.Items.AddRange(new WinForms.ToolStripItem[] { openItem, settingsItem, pinItem, new WinForms.ToolStripSeparator(), restartItem, quitItem });
         menu.Opening += (_, _) => pinItem.Text = isPinned() ? "고정 풀기" : "고정하기";
 
         icon.ContextMenuStrip = menu;

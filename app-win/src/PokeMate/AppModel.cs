@@ -228,6 +228,21 @@ public sealed class AppModel : NotifyObject
         Alarms = alarms.Select(a => a.Group == name ? a with { Group = null } : a).ToList();
     }
 
+    /// 그룹 순서 (alarm-groups.json 배열 순서). 끌어다 놓기: target 자리로, null 이면 맨 끝으로.
+    public void MoveGroup(string name, string? target)
+    {
+        var next = GroupOrder.Move(alarmGroups, name, target);
+        if (!next.SequenceEqual(alarmGroups)) AlarmGroups = next;
+    }
+
+    public bool CanShiftGroup(string name, bool up) => GroupOrder.CanShift(alarmGroups, name, up);
+
+    public void ShiftGroup(string name, bool up)
+    {
+        var next = GroupOrder.Shift(alarmGroups, name, up);
+        if (!next.SequenceEqual(alarmGroups)) AlarmGroups = next;
+    }
+
     /// 끌어다 놓기: 알림을 그룹으로 옮긴다 (null 이면 그룹 없음).
     public void Reorder(Guid id, string? group, Guid? before)
     {

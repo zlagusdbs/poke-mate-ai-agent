@@ -269,11 +269,16 @@ public static class EditorStyle
         return window;
     }
 
-    /// 대화 창 아래 버튼 줄의 키보드 동작. 고른 버튼 하나만 파란색(PrimaryButton)으로 보이고,
-    /// ← → 로 고른 버튼을 바꾸며, Enter 는 고른 버튼을 누른다. 처음에는 `selected` 번째가 골라져 있다.
-    /// 아이디처럼 글자를 고치는 칸(TextBox)에서는 ← → 가 글자 사이를 옮기고, Enter 만 버튼을 누른다.
+    /// 대화 창 아래 버튼 줄의 키보드 동작 (모든 등록·수정·확인 창이 같이 쓴다).
+    /// - 고른 버튼 하나만 파란색(PrimaryButton)으로 보인다. 처음에는 `selected` 번째(보통 저장·확인)가 골라져 있다.
+    /// - 버튼에 포커스가 있거나 아무 칸에도 포커스가 없을 때 ← → 로 고른 버튼과 포커스를 옮긴다.
+    ///   글자 칸·고르기 칸 안에서는 ← → 가 원래 동작(글자 커서 이동 등)을 한다.
+    /// - Enter 는 고른 버튼을 누른다 (꺼져 있으면 아무 일도 없다). 여러 줄 글자 칸에서는 줄바꿈, 버튼 줄 밖의 다른 버튼은 그 버튼을 누른다.
+    /// - 글자 칸에 포커스가 들어가면 처음 버튼으로 되돌아간다 (입력칸에서 Enter = 저장). Tab 으로 버튼에 가면 그 버튼이 골라진다.
+    /// - Esc 는 Dialog() 가 취소로 닫는다.
     public static void ButtonKeys(Window window, IReadOnlyList<Button> buttons, int selected)
     {
+        var initial = selected;
         // Pill 버튼은 안쪽 여백을 직접 0 으로 두므로, 파란 버튼일 때는 그 값을 지우고 돌아올 때 되돌린다.
         var padding = buttons.Select(b => b.ReadLocalValue(Control.PaddingProperty)).ToArray();
         void Paint()
@@ -286,18 +291,38 @@ public static class EditorStyle
                 else buttons[i].Padding = (Thickness)padding[i];
             }
         }
+        void Select(int index, bool focus)
+        {
+            if (index < 0 || index >= buttons.Count) return;
+            if (index != selected) { selected = index; Paint(); }
+            if (focus) buttons[index].Focus();
+        }
         Paint();
+        window.PreviewGotKeyboardFocus += (_, e) =>
+        {
+            var index = buttons.ToList().FindIndex(b => ReferenceEquals(b, e.NewFocus));
+            if (index >= 0) Select(index, false);
+            else if (e.NewFocus is TextBoxBase or PasswordBox) Select(initial, false);
+        };
         window.PreviewKeyDown += (_, e) =>
         {
             if (e.Handled) return;
-            var inTextBox = System.Windows.Input.Keyboard.FocusedElement is TextBox;
+            var focused = System.Windows.Input.Keyboard.FocusedElement;
+            var onButtons = focused is Button b && buttons.Contains(b);
+            var nowhere = focused == null || focused is Window or ScrollViewer;
+            var plain = System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None;
             switch (e.Key)
             {
-                case System.Windows.Input.Key.Left when !inTextBox && selected > 0:
-                    selected--; Paint(); e.Handled = true; break;
-                case System.Windows.Input.Key.Right when !inTextBox && selected < buttons.Count - 1:
-                    selected++; Paint(); e.Handled = true; break;
-                case System.Windows.Input.Key.Enter when System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None:
+                case System.Windows.Input.Key.Left when plain && (onButtons || nowhere):
+                    // 꺼진 버튼은 건너뛴다
+                    for (var i = selected - 1; i >= 0; i--) if (buttons[i].IsEnabled) { Select(i, true); break; }
+                    e.Handled = true; break;
+                case System.Windows.Input.Key.Right when plain && (onButtons || nowhere):
+                    for (var i = selected + 1; i < buttons.Count; i++) if (buttons[i].IsEnabled) { Select(i, true); break; }
+                    e.Handled = true; break;
+                case System.Windows.Input.Key.Enter when plain:
+                    if (focused is TextBox { AcceptsReturn: true }) return;
+                    if (focused is ButtonBase other && !onButtons && other is not ToggleButton) return;
                     e.Handled = true;
                     var button = buttons[selected];
                     if (button.IsEnabled) button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent, button));

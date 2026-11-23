@@ -441,6 +441,13 @@ do {
     check(encoded.flatMap { try? JSONDecoder().decode([Alarm].self, from: $0) }.map(titles) == ["a", "d", "c", "b", "e"], "order: 순서는 파일 배열 순서로 저장")
     let old = #"[{"id":"6F1D6F5E-0000-0000-0000-00000000000A","title":"2","prompt":"","hour":9,"minute":0,"repeatRule":{"daily":{}},"enabled":true},{"id":"6F1D6F5E-0000-0000-0000-00000000000B","title":"1","prompt":"","hour":8,"minute":0,"repeatRule":{"daily":{}},"enabled":true}]"#
     check((try? JSONDecoder().decode([Alarm].self, from: Data(old.utf8))).map(titles) == ["2", "1"], "order: 예전 파일은 지금 순서 그대로")
+    let gs = ["A", "B", "C", "D"]
+    check(GroupOrder.move(gs, "D", to: "B") == ["A", "D", "B", "C"], "group order: 위로 끌면 놓은 그룹 앞으로")
+    check(GroupOrder.move(gs, "A", to: "C") == ["B", "C", "A", "D"], "group order: 아래로 끌면 놓은 그룹 뒤로")
+    check(GroupOrder.move(gs, "B", to: nil) == ["A", "C", "D", "B"], "group order: 그룹 없음에 놓으면 맨 끝으로")
+    check(GroupOrder.move(gs, "B", to: "B") == gs && GroupOrder.move(gs, "X", to: "A") == gs && GroupOrder.move(gs, "A", to: "X") == gs, "group order: 제자리·없는 그룹은 그대로")
+    check(GroupOrder.shift(gs, "C", up: true) == ["A", "C", "B", "D"] && GroupOrder.shift(gs, "C", up: false) == ["A", "B", "D", "C"], "group order: 위로/아래로 옮기기는 이웃과 자리 바꿈")
+    check(!GroupOrder.canShift(gs, "A", up: true) && !GroupOrder.canShift(gs, "D", up: false) && GroupOrder.shift(gs, "A", up: true) == gs, "group order: 맨 위·맨 아래는 더 못 옮김")
     check(Alarm.displayCommand("uv --directory /Users/u/Workspace/poke-mate-ai-agent/mcp-server run --quiet pokemate auto worklog-check", home: "/Users/u")
           == "pokemate auto worklog-check", "command: uv 앞부분은 빼고 실제 명령만")
     check(Alarm.displayCommand("/opt/homebrew/bin/uv --directory \"/a b/c\" run tool x", home: "/Users/u") == "tool x", "command: uv 경로·따옴표 경로도")
