@@ -139,21 +139,31 @@ public static class ReviewEval
     }
 
     /// 평가 인자의 세션 이어 쓰기 규칙: `always` · `default` · `{분},{토큰}`. 그 밖은 null.
-    public static SessionReuse? Policy(string text)
+    public static SessionPolicy? Policy(string text)
     {
         switch (text)
         {
-            case "always": return SessionReuse.Always;
-            case "default": return new SessionReuse();
+            case "always": return SessionPolicy.Always;
+            case "default": return new SessionPolicy();
             default:
                 var parts = text.Split(',', StringSplitOptions.RemoveEmptyEntries)
                     .Select(p => long.TryParse(SwiftText.TrimSpaces(p), System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out var n) ? (long?)n : null)
                     .OfType<long>().ToList();
-                return parts.Count == 2 && parts.All(n => n >= 0) ? new SessionReuse((int)Math.Min(parts[0], int.MaxValue), parts[1]) : null;
+                return parts.Count == 2 && parts.All(n => n >= 0) ? new SessionPolicy((int)Math.Min(parts[0], int.MaxValue), parts[1]) : null;
         }
     }
 
+    /// `--reuse` 로 돌릴 때 문제 하나의 세션 고르기: 앱과 같은 `SessionPolicy.Decide` (건 = 문제의 PR `pr:…` 또는 가상 레포 티켓 `jira:…`).
+    /// 이전 세션은 평가 세션 기록의 `{도메인}:reviewer` 칸에서 온다. 다른 건이면 늘 새로, 새로 시작하면 칸에 이유를 남긴다.
+    public static SessionPolicy.Decision ChooseSession(WorkSessionBook book, string slot, string caseKey, SessionPolicy policy, DateTimeOffset now)
+    {
+        var decision = policy.Decide(caseKey, PipelineRole.Reviewer.Raw(), book.Previous(slot), now);
+        if (!decision.Resumed) book.StartFresh(slot, caseKey, decision.Reason, now);
+        return decision;
+    }
+
     /// 성공한 실행만 세션 기록에 남기고, 대화 기록에서 다시 센 값이 있으면 덮어쓴다. 실패한 실행은 기록하지 않는다 (다음 문제는 새로 시작).
+    /// `caseId` 는 칸의 `keys` 에 남기는 건 이름이다 (`SessionPolicy.Label`: `svc#12`·`ACME-1`).
     public static void RecordSession(WorkSessionBook book, string key, string sessionId, bool ok, string caseId, RunUsage? usage,
                                      (RunUsage Usage, long LastContext)? transcript, DateTimeOffset now)
     {

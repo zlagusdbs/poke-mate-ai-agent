@@ -29,9 +29,8 @@ public struct AppSettings: Codable, Equatable {
     public var pokedexRange: PokedexRange = .gen1
     public var claudeTools = false
     public var workSessionAlertPercent = 70
-    public var sessionReuseMinutes = SessionReuse.defaultMinutes
-    public var sessionReuseMaxTokens = SessionReuse.defaultTokens
-    public var reviewerAlwaysFresh = true
+    public var sessionReuseMinutes = SessionPolicy.defaultMinutes
+    public var sessionReuseMaxTokens = SessionPolicy.defaultTokens
 
     public static let defaultAssistantName = "메이트"
     public static let defaultAutomationRules = ["commit-pr.md", "domain-knowledge.md", "production-env.md"]
@@ -44,7 +43,7 @@ public struct AppSettings: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case assistantName, repoDir, claudePath, uvPath, reportHour, reportMinute, lastReportDay, hotkey, ownerName, model, effort, useHomeInstructions, pokedexRange, claudeTools, workSessionAlertPercent,
-             homeInChat, homeInAutomation, automationRules, shareHomeSkills, automationModel, automationEffort, sessionReuseMinutes, sessionReuseMaxTokens, reviewerAlwaysFresh
+             homeInChat, homeInAutomation, automationRules, shareHomeSkills, automationModel, automationEffort, sessionReuseMinutes, sessionReuseMaxTokens
     }
 
     public static let `default` = AppSettings(
@@ -93,9 +92,8 @@ public struct AppSettings: Codable, Equatable {
         pokedexRange = (try? c.decodeIfPresent(PokedexRange.self, forKey: .pokedexRange)) ?? .gen1
         claudeTools = try c.decodeIfPresent(Bool.self, forKey: .claudeTools) ?? false
         workSessionAlertPercent = try c.decodeIfPresent(Int.self, forKey: .workSessionAlertPercent) ?? 70
-        sessionReuseMinutes = max(0, try c.decodeIfPresent(Int.self, forKey: .sessionReuseMinutes) ?? SessionReuse.defaultMinutes)
-        sessionReuseMaxTokens = max(0, try c.decodeIfPresent(Int.self, forKey: .sessionReuseMaxTokens) ?? SessionReuse.defaultTokens)
-        reviewerAlwaysFresh = try c.decodeIfPresent(Bool.self, forKey: .reviewerAlwaysFresh) ?? true
+        sessionReuseMinutes = max(0, try c.decodeIfPresent(Int.self, forKey: .sessionReuseMinutes) ?? SessionPolicy.defaultMinutes)
+        sessionReuseMaxTokens = max(0, try c.decodeIfPresent(Int.self, forKey: .sessionReuseMaxTokens) ?? SessionPolicy.defaultTokens)
     }
 }
 

@@ -42,8 +42,13 @@ public static class DomainReviewChecks
         var first = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Chosen, true, empty, "H", "본문");
         var again = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Learned, false, notes, "H", "본문");
         var unsure = DomainReview.ReviewPrompt(other, "default", "못 정함", DomainReview.Source.Chosen, true, notes, "H", "본문");
+        var handed = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Chosen, true, notes, "H", "본문", "## 이번 건 인계\n- 리뷰어: 앞 리뷰");
+        var resumedWithBlock = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Chosen, false, notes, "H", "본문", "## 이번 건 인계\n- 리뷰어: 앞 리뷰");
+        Check.That(handed.Contains("## 이번 건 인계\n- 리뷰어: 앞 리뷰") && handed.IndexOf("## 이번 건 인계", StringComparison.Ordinal) < handed.IndexOf("도메인 노트", StringComparison.Ordinal)
+                   && !resumedWithBlock.Contains("## 이번 건 인계") && !first.Contains("## 이번 건 인계"),
+                   "review: 새 세션이면 인계 블록을 안내 앞쪽에, 이어 쓰는 세션·처음에는 없음");
         Check.That(DomainReview.SessionKey("acme") == "acme:reviewer"
-                   && first.Contains("세션 acme:reviewer") && first.Contains("첫 실행") && first.Contains("H domain-note --domain acme --init") && first.EndsWith("본문")
+                   && first.Contains("세션 acme:reviewer") && first.Contains("PR 마다 따로") && first.Contains("새 세션이니") && first.Contains("H domain-note --domain acme --init") && first.EndsWith("본문")
                    && first.Contains("`C:/n/acme/checklist.md` (없음)")
                    && again.Contains("새로 필요한 것만") && again.Contains("`C:/n/acme/checklist.md` (20줄)") && again.Contains("`C:/n/acme/notes.md` (12줄)")
                    && !again.Contains("--init") && again.Contains("H gh-file --repo acme/sample-web")
@@ -51,7 +56,7 @@ public static class DomainReviewChecks
                    && unsure.Contains("도메인 미정, 점검표 없음") && !unsure.Contains("domain-note")
                    && !notes.PromptLines("acme", "H", "ACME-1", canWrite: false).Contains("domain-note")
                    && notes.PromptLines("acme", "H", "ACME-1", canWrite: false).Contains("읽기만"),
-                   "review: 리뷰어 세션 안내 (첫 실행·이어 쓰기·공유 노트·init·gh-file·domain-note·default)");
+                   "review: 리뷰어 세션 안내 (새 세션·이어 쓰기·공유 노트·init·gh-file·domain-note·default)");
         Check.That(first.Contains("도메인 acme (이번에 PR 내용으로 정함: 쿠폰함)") && again.Contains("도메인 acme (예전에 정한 기록: 쿠폰함)")
                    && first.Contains("로컬 레포 폴더(~/Workspace/sample-web)"), "review: 도메인을 정한 근거를 안내에 적음");
 

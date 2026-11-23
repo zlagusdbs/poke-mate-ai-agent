@@ -138,16 +138,26 @@ public enum ReviewEval {
         return access
     }
 
-    public static func policy(_ text: String) -> SessionReuse? {
+    public static func policy(_ text: String) -> SessionPolicy? {
         switch text {
         case "always": return .always
-        case "default": return SessionReuse()
+        case "default": return SessionPolicy()
         default:
             let parts = text.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-            return parts.count == 2 && parts.allSatisfy { $0 >= 0 } ? SessionReuse(idleMinutes: parts[0], maxTokens: parts[1]) : nil
+            return parts.count == 2 && parts.allSatisfy { $0 >= 0 } ? SessionPolicy(idleMinutes: parts[0], maxTokens: parts[1]) : nil
         }
     }
 
+    /// `--reuse` 로 돌릴 때 문제 하나의 세션 고르기: 앱과 같은 `SessionPolicy.decide` (건 = 문제의 PR `pr:…` 또는 가상 레포 티켓 `jira:…`).
+    /// 이전 세션은 평가 세션 기록의 `{도메인}:reviewer` 칸에서 온다. 다른 건이면 늘 새로, 새로 시작하면 칸에 이유를 남긴다.
+    public static func chooseSession(_ book: inout WorkSessionBook, slot: String, caseKey: String, policy: SessionPolicy, now: Date) -> SessionPolicy.Decision {
+        let decision = policy.decide(caseKey: caseKey, role: PipelineRole.reviewer.rawValue, previous: book.previous(slot), now: now)
+        if !decision.resumed { book.startFresh(repo: slot, caseKey: caseKey, reason: decision.reason, now: now) }
+        return decision
+    }
+
+    /// 성공한 실행만 세션 기록에 남기고, 대화 기록에서 다시 센 값이 있으면 덮어쓴다. 실패한 실행은 기록하지 않는다 (다음 문제는 새로 시작).
+    /// `caseId` 는 칸의 `keys` 에 남기는 건 이름이다 (`SessionPolicy.label`: `svc#12`·`ACME-1`).
     public static func recordSession(_ book: inout WorkSessionBook, key: String, sessionId: String, ok: Bool, caseId: String,
                                      usage: RunUsage?, transcript: (usage: RunUsage, lastContext: Int)?, now: Date) {
         guard ok else { return }

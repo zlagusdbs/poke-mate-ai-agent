@@ -90,6 +90,6 @@ public static class AppSettingsChecks
         Check.That(path[0] == Path.GetDirectoryName(round.UvPath) && path[1] == Path.GetDirectoryName(round.ClaudePath) && !env["PATH"].Contains("/opt/homebrew")
                    && env.ContainsKey("Path") && env["CLAUDE_CONFIG_DIR"] == AppPaths.ClaudeConfigDir && Directory.Exists(AppPaths.ClaudeConfigDir),
                    "settings: PATH 는 ; 로, uv·claude 폴더 먼저, 전용 로그인 폴더");
-        Check.That(new SessionReuse(round).IdleMinutes == SessionReuse.DefaultMinutes && SessionReuse.Always.MaxTokens == 0, "settings: 세션 재사용 기본값");
+        Check.That(new SessionPolicy(round).IdleMinutes == SessionPolicy.DefaultMinutes && SessionPolicy.Always.MaxTokens == 0, "settings: 세션 재사용 기본값");
     }
 }

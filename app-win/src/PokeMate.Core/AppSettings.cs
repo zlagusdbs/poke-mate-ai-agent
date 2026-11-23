@@ -37,9 +37,8 @@ public sealed record AppSettings
     public PokedexRange PokedexRange { get; set; } = PokedexRange.Gen1;
     public bool ClaudeTools { get; set; }
     public int WorkSessionAlertPercent { get; set; } = 70;
-    public int SessionReuseMinutes { get; set; } = SessionReuse.DefaultMinutes;
-    public int SessionReuseMaxTokens { get; set; } = SessionReuse.DefaultTokens;
-    public bool ReviewerAlwaysFresh { get; set; } = true;
+    public int SessionReuseMinutes { get; set; } = SessionPolicy.DefaultMinutes;
+    public int SessionReuseMaxTokens { get; set; } = SessionPolicy.DefaultTokens;
 
     public const string DefaultAssistantName = "메이트";
     public static readonly IReadOnlyList<string> DefaultAutomationRules = new[] { "commit-pr.md", "domain-knowledge.md", "production-env.md" };
@@ -85,7 +84,7 @@ public sealed record AppSettings
         && AutomationRules.SequenceEqual(o.AutomationRules) && ShareHomeSkills == o.ShareHomeSkills && AutomationModel == o.AutomationModel
         && AutomationEffort == o.AutomationEffort && PokedexRange == o.PokedexRange && ClaudeTools == o.ClaudeTools
         && WorkSessionAlertPercent == o.WorkSessionAlertPercent && SessionReuseMinutes == o.SessionReuseMinutes
-        && SessionReuseMaxTokens == o.SessionReuseMaxTokens && ReviewerAlwaysFresh == o.ReviewerAlwaysFresh;
+        && SessionReuseMaxTokens == o.SessionReuseMaxTokens;
 
     public override int GetHashCode() => HashCode.Combine(AssistantName, RepoDir, ClaudePath, UvPath, OwnerName, Model);
 
@@ -150,9 +149,8 @@ public sealed class AppSettingsConverter : JsonConverter<AppSettings>
         s.PokedexRange = Json.Str(node["pokedexRange"]) switch { "all" => PokedexRange.All, _ => PokedexRange.Gen1 };   // try? → gen1
         s.ClaudeTools = Bool("claudeTools") ?? false;
         s.WorkSessionAlertPercent = Int("workSessionAlertPercent") ?? 70;
-        s.SessionReuseMinutes = Math.Max(0, Int("sessionReuseMinutes") ?? SessionReuse.DefaultMinutes);
-        s.SessionReuseMaxTokens = Math.Max(0, Int("sessionReuseMaxTokens") ?? SessionReuse.DefaultTokens);
-        s.ReviewerAlwaysFresh = Bool("reviewerAlwaysFresh") ?? true;
+        s.SessionReuseMinutes = Math.Max(0, Int("sessionReuseMinutes") ?? SessionPolicy.DefaultMinutes);
+        s.SessionReuseMaxTokens = Math.Max(0, Int("sessionReuseMaxTokens") ?? SessionPolicy.DefaultTokens);
         return s;
     }
 
@@ -186,7 +184,6 @@ public sealed class AppSettingsConverter : JsonConverter<AppSettings>
         writer.WriteString("automationEffort", s.AutomationEffort);
         writer.WriteNumber("sessionReuseMinutes", s.SessionReuseMinutes);
         writer.WriteNumber("sessionReuseMaxTokens", s.SessionReuseMaxTokens);
-        writer.WriteBoolean("reviewerAlwaysFresh", s.ReviewerAlwaysFresh);
         writer.WriteEndObject();
     }
 }
