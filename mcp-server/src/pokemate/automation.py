@@ -21,6 +21,7 @@ from .credentials import data_dir
 from .deploy_client import DeployClient
 from .errors import PokeMateError
 from .jira_client import AUTO_COMMENT_PREFIX, QUESTION_PREFIX, JiraClient
+from .kb_sync import cmd_kb_sync
 from .trial import FakeJira, overlay, trial_dir
 
 HOME = os.path.expanduser("~")
@@ -510,6 +511,60 @@ def cmd_worklog_check(args):
     calendar = settings().get("worklogCalendarUrl")
     title = settings().get("worklogCalendarTitle") or "근무 캘린더"
     return post_card(body, [open_url(title, calendar)] if calendar else None, args.dry_run)
+
+def work_day(date):
+    """그날 HR 유연근무 근무시간과 내 Jira worklog 합계 비교 (메이트 도구 work_day_check 와 같다)."""
+    import logging
+    from .server import work_day_check
+    # MCP 서버 모듈을 불러오면 HTTP 요청 로그(INFO)가 켜진다. 맞는 날에는 출력이 없어야 앱이 조용히 넘어가므로 끈다.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    return work_day_check(date)
+
+
+def hm(minutes):
+    """분 → "7시간 30분" """
+    minutes = abs(int(minutes))
+    h, m = divmod(minutes, 60)
+    return f"{h}시간" + (f" {m}분" if m else "") if h else f"{m}분"
+
+
+def cmd_workday_check(args):
+    """직전 근무일의 HR 근무시간과 worklog 합계가 다르면 알린다. 같으면 아무것도 출력하지 않는다(앱이 조용히 넘어간다)."""
+    today = dt.date.fromisoformat(args.today) if args.today else now().date()
+    try:
+        holidays = kr_holidays({today.year, today.year - 1 if today.month == 1 else today.year})
+    except Exception:
+        holidays = {}
+    target = previous_business_day(today, holidays)
+    result = work_day(target.isoformat())
+    wd = "월화수목금토일"
+    day = f"{target.strftime('%m/%d')}({wd[target.weekday()]})"
+    status = result.get("status")
+    hr = result.get("hr") or {}
+    worklog = result.get("worklog") or {}
+    if status == "match":
+        if args.verbose:
+            print(f"✅ {day} worklog 맞음 · {'휴가' if hr.get('dayOff') else hm(worklog.get('minutes', 0))}")
+        return 0
+    if status not in ("short", "over"):
+        codes = ", ".join(str(e.get("error") if isinstance(e, dict) else e) for e in result.get("errors") or []) or "HR 근무일정이 없어요"
+        print(f"❓ {day} 비교 못 함: {codes}")
+        return 1
+    gap = result.get("gapMinutes") or 0
+    when = "휴가" if hr.get("dayOff") else f"{hr.get('start') or '?'}~{hr.get('end') or '?'} {hm(hr.get('minutes') or 0)}"
+    lines = [f"⚠️ {day} worklog {hm(gap)} {'모자람' if gap > 0 else '많음'}",
+             f"HR {when} · worklog {hm(worklog.get('minutes') or 0)}"]
+    per_issue = {}
+    for item in worklog.get("items") or []:
+        per_issue[item.get("issueKey")] = per_issue.get(item.get("issueKey"), 0) + int(item.get("seconds") or 0)
+    for key, sec in sorted(per_issue.items(), key=lambda kv: -kv[1])[:5]:
+        lines.append(f"{key} {hm(sec // 60)}")
+    if not per_issue:
+        lines.append("worklog 기록 없음")
+    print("\n".join(lines))
+    append_event({"source": "worklog", "event": status, "key": target.isoformat(), "result": lines[0]})
+    return 0
+
 
 if sys.platform == "win32":
     _PROGRAM_FILES = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -1489,6 +1544,11 @@ def main(argv=None):
     w.add_argument("--dry-run", action="store_true", help="보내지 않고 카드만 출력")
     w.set_defaults(func=cmd_worklog_check)
 
+    d = sub.add_parser("workday-check", help="직전 근무일의 HR 근무시간과 worklog 합계가 다르면 출력 (같으면 출력 없음)", description="직전 근무일의 HR 근무시간과 worklog 합계가 다르면 출력 (같으면 출력 없음)")
+    d.add_argument("--today", help="기준 날짜 YYYY-MM-DD (기본 오늘)")
+    d.add_argument("--verbose", action="store_true", help="맞을 때도 한 줄 출력")
+    d.set_defaults(func=cmd_workday_check)
+
     q = sub.add_parser("poll", help="Jira·GitHub 새 일감 확인 후 Claude 실행 (평일 9~19시에만)", description="Jira·GitHub 새 일감 확인 후 Claude 실행 (평일 9~19시에만)")
     q.add_argument("--force", action="store_true", help="근무 시간이 아니어도 확인")
     q.add_argument("--only", choices=["jira", "github"], help="한쪽만 확인")
@@ -1622,6 +1682,13 @@ def main(argv=None):
     es.add_argument("--label", help="표 제목에 붙일 이름 (예: 데스크톱)")
     es.add_argument("--out", help="score 파일을 쓸 폴더 (기본: 결과 폴더)")
     es.set_defaults(func=cmd_eval_score)
+
+    ks = sub.add_parser("kb-sync", help="팀 KB 원본이 바뀌었으면 second-brain 스냅샷 갱신 PR 을 올림 (local/kb-sync.json), 결과 JSON", description="팀 KB 원본(사내 GitHub)이 스냅샷 이후 바뀌었으면 second-brain 의 스냅샷 폴더를 맞추고 hotfix 브랜치로 main 에 PR 을 올린다. 같은 KB 의 열린 갱신 PR 이 있으면 거기에 이어 올린다. 바뀐 게 없으면 아무것도 하지 않는다")
+    ks.add_argument("--domain", help="도메인 이름 (kb-sync.json 의 domains 로 KB 를 고름, 없으면 no-kb)")
+    ks.add_argument("--kb", help="KB 이름 (kb-sync.json 의 kbs 키). --domain 대신")
+    ks.add_argument("--dry-run", action="store_true", help="커밋·push·PR 없이 바뀔 내용만 출력")
+    ks.add_argument("--config", help="설정 파일 (기본 local/kb-sync.json)")
+    ks.set_defaults(func=cmd_kb_sync)
 
     args = p.parse_args(argv)
     blocked = eval_blocked(args)

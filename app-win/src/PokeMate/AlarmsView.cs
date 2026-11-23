@@ -8,11 +8,12 @@ using Trigger = PokeMate.Core.Trigger;
 
 namespace PokeMate;
 
-/// 알람 탭 (맥 AlarmsView). 요약 카드, 그룹, 알림 목록. 끌어서 옮기기와 오른쪽 클릭 "위로/아래로 옮기기"가 있다.
+/// 알람 탭 (맥 AlarmsView). 요약 카드, 그룹, 알림 목록. 알림과 그룹 모두 끌어서 옮기기와 오른쪽 클릭 "위로/아래로 옮기기"가 있다.
 [PopoverTab(SidebarItem.Alarms)]
 public sealed class AlarmsView : UserControl
 {
     const string DragFormat = "PokeMate.Alarm";
+    const string GroupDragFormat = "PokeMate.AlarmGroup";
     static readonly CultureInfo Korean = CultureInfo.GetCultureInfo("ko-KR");
 
     readonly AppModel model;
@@ -160,14 +161,18 @@ public sealed class AlarmsView : UserControl
     {
         var body = new StackPanel();
         var header = Header("", group.Name, group.Alarms.Count, expanded, group.Alarms.Any(a => model.AlarmRuns.GetValueOrDefault(a.Id) is AlarmRunState.Running),
-            () => { ToggleGroup(group.Name); Render(); }, expanded ? "접기 · 오른쪽 클릭: 이름 바꾸기, 삭제" : "펼치기 · 오른쪽 클릭: 이름 바꾸기, 삭제", "AlarmGroup:" + group.Name);
+            () => { ToggleGroup(group.Name); Render(); }, expanded ? "접기 · 끌어서 순서 바꾸기 · 오른쪽 클릭: 옮기기, 이름 바꾸기, 삭제" : "펼치기 · 끌어서 순서 바꾸기 · 오른쪽 클릭: 옮기기, 이름 바꾸기, 삭제", "AlarmGroup:" + group.Name);
         var menu = new ContextMenu();
         menu.Items.Add(ChatUi.Item("모두 켜기", () => { foreach (var a in group.Alarms) SetEnabled(a.Id, true); }));
         menu.Items.Add(ChatUi.Item("모두 끄기", () => { foreach (var a in group.Alarms) SetEnabled(a.Id, false); }));
         menu.Items.Add(new Separator());
+        menu.Items.Add(ChatUi.Item("위로 옮기기", () => model.ShiftGroup(group.Name, true), enabled: model.CanShiftGroup(group.Name, true)));
+        menu.Items.Add(ChatUi.Item("아래로 옮기기", () => model.ShiftGroup(group.Name, false), enabled: model.CanShiftGroup(group.Name, false)));
+        menu.Items.Add(new Separator());
         menu.Items.Add(ChatUi.Item("이름 바꾸기", () => RenameGroup(group.Name)));
         menu.Items.Add(ChatUi.Item("그룹 삭제", () => DeleteGroup(group.Name), foreground: "OrangeBrush"));
         header.ContextMenu = menu;
+        DragSource(header, () => new DataObject(GroupDragFormat, group.Name));
         body.Children.Add(header);
         if (expanded)
         {
@@ -242,6 +247,38 @@ public sealed class AlarmsView : UserControl
     Guid? DraggedId(DragEventArgs e) =>
         e.Data.GetDataPresent(DragFormat) && Guid.TryParse(e.Data.GetData(DragFormat) as string, out var id) ? id : null;
 
+    static string? DraggedGroup(DragEventArgs e) => e.Data.GetDataPresent(GroupDragFormat) ? e.Data.GetData(GroupDragFormat) as string : null;
+
+    /// 누른 채로 조금 움직이면 끌기를 시작한다. 안쪽 버튼(실행·수정 등)에서 누르면 시작하지 않는다.
+    void DragSource(FrameworkElement source, Func<DataObject> data, bool skipButtons = false)
+    {
+        Point? start = null;
+        source.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            start = null;
+            if (skipButtons)
+                for (var d = e.OriginalSource as DependencyObject; d != null && d != source; d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+                    if (d is System.Windows.Controls.Primitives.ButtonBase) return;
+            start = e.GetPosition(source);
+        };
+        source.PreviewMouseLeftButtonUp += (_, _) => start = null;
+        source.PreviewMouseMove += (_, e) =>
+        {
+            if (start is not Point origin || e.LeftButton != MouseButtonState.Pressed) return;
+            var now = e.GetPosition(source);
+            if (Math.Abs(now.X - origin.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(now.Y - origin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+            start = null;
+            dragging = true;
+            try { DragDrop.DoDragDrop(source, data(), DragDropEffects.Move); }
+            finally
+            {
+                dragging = false;
+                if (renderLater) { renderLater = false; Render(); }
+            }
+        };
+    }
+
+    /// 알림을 놓으면 그 그룹 끝으로, 그룹 머리줄을 놓으면 그 그룹 자리로(그룹 없음이면 맨 끝으로) 옮긴다.
     void MakeDropTarget(Border target, string? group)
     {
         target.AllowDrop = true;
@@ -251,13 +288,15 @@ public sealed class AlarmsView : UserControl
             target.BorderBrush = on ? Theme.Brush("AccentBrush") : null;
             target.Background = on ? Theme.Brush("AccentSoft") : Theme.Brush("CardBg");
         }
-        target.DragEnter += (_, e) => { if (DraggedId(e) != null) Mark(true); };
-        target.DragOver += (_, e) => { e.Effects = DraggedId(e) != null ? DragDropEffects.Move : DragDropEffects.None; e.Handled = true; };
+        bool Accepts(DragEventArgs e) => DraggedId(e) != null || (DraggedGroup(e) is { } dragged && dragged != group);
+        target.DragEnter += (_, e) => { if (Accepts(e)) Mark(true); };
+        target.DragOver += (_, e) => { e.Effects = Accepts(e) ? DragDropEffects.Move : DragDropEffects.None; e.Handled = true; };
         target.DragLeave += (_, _) => Mark(false);
         target.Drop += (_, e) =>
         {
             Mark(false);
             if (DraggedId(e) is { } id) model.Reorder(id, group, null);
+            else if (DraggedGroup(e) is { } dragged) model.MoveGroup(dragged, group);
             e.Handled = true;
         };
     }
@@ -388,37 +427,16 @@ public sealed class AlarmsView : UserControl
         column.Children.Insert(0, insert);
         column.AllowDrop = true;
         column.DragEnter += (_, e) => { if (DraggedId(e) is { } id && id != alarm.Id) insert.Visibility = Visibility.Visible; };
-        column.DragOver += (_, e) => { e.Effects = DraggedId(e) != null ? DragDropEffects.Move : DragDropEffects.None; e.Handled = true; };
+        column.DragOver += (_, e) => { if (DraggedId(e) == null) return; e.Effects = DragDropEffects.Move; e.Handled = true; };
         column.DragLeave += (_, _) => insert.Visibility = Visibility.Collapsed;
         column.Drop += (_, e) =>
         {
             insert.Visibility = Visibility.Collapsed;
-            if (DraggedId(e) is { } id && id != alarm.Id) model.Reorder(id, group, alarm.Id);
+            if (DraggedId(e) is not { } id) return;
+            if (id != alarm.Id) model.Reorder(id, group, alarm.Id);
             e.Handled = true;
         };
-        Point? start = null;
-        column.PreviewMouseLeftButtonDown += (_, e) =>
-        {
-            start = null;
-            for (var d = e.OriginalSource as DependencyObject; d != null && d != column; d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
-                if (d is System.Windows.Controls.Primitives.ButtonBase) return;
-            start = e.GetPosition(column);
-        };
-        column.PreviewMouseLeftButtonUp += (_, _) => start = null;
-        column.PreviewMouseMove += (_, e) =>
-        {
-            if (start is not Point origin || e.LeftButton != MouseButtonState.Pressed) return;
-            var now = e.GetPosition(column);
-            if (Math.Abs(now.X - origin.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(now.Y - origin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
-            start = null;
-            dragging = true;
-            try { DragDrop.DoDragDrop(column, new DataObject(DragFormat, alarm.Id.ToString()), DragDropEffects.Move); }
-            finally
-            {
-                dragging = false;
-                if (renderLater) { renderLater = false; Render(); }
-            }
-        };
+        DragSource(column, () => new DataObject(DragFormat, alarm.Id.ToString()), skipButtons: true);
         return column;
     }
 
@@ -539,6 +557,8 @@ public sealed class AlarmsView : UserControl
         buttons.Children.Add(cancel);
         buttons.Children.Add(save);
         body.Children.Add(buttons);
+        ChatUi.Id(cancel, "GroupNameCancel");
+        EditorStyle.ButtonKeys(window, new[] { cancel, save }, 1);
         window.Loaded += (_, _) => { box.Focus(); box.SelectAll(); };
         return EditorStyle.ShowModal(window) == true && name.Trim().Length > 0 ? name : null;
     }
@@ -626,6 +646,7 @@ public sealed class AlarmEditor
         footer.Children.Add(saveButton);
         DockPanel.SetDock(footer, Dock.Bottom);
         root.Children.Add(footer);
+        EditorStyle.ButtonKeys(window, new[] { cancel, saveButton }, 1);
 
         body.Margin = new Thickness(20, 0, 20, 0);
         root.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });

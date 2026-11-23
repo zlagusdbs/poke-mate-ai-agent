@@ -444,6 +444,7 @@ public sealed class SettingsView : UserControl
         buttons.Children.Add(shared);
         buttons.Children.Add(local);
         body.Children.Add(buttons);
+        EditorStyle.ButtonKeys(window, new[] { cancel, shared, local }, 2);
         void Create(Rules.Layer layer)
         {
             try

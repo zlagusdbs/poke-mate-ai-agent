@@ -66,3 +66,29 @@ public enum AlarmOrder {
         return list
     }
 }
+
+/// 그룹 순서 바꾸기 (순서는 alarm-groups.json 배열 순서, Windows GroupOrder 와 같다).
+public enum GroupOrder {
+    /// 끌어다 놓기: name 을 target 자리로 옮긴다. 위로 끌면 target 앞, 아래로 끌면 target 뒤. target 이 nil 이면 맨 끝으로.
+    public static func move(_ groups: [String], _ name: String, to target: String?) -> [String] {
+        guard name != target, let i = groups.firstIndex(of: name) else { return groups }
+        guard let t = target == nil ? groups.count - 1 : groups.firstIndex(of: target!) else { return groups }
+        var list = groups
+        list.remove(at: i)
+        list.insert(name, at: t)
+        return list
+    }
+
+    public static func canShift(_ groups: [String], _ name: String, up: Bool) -> Bool {
+        guard let i = groups.firstIndex(of: name) else { return false }
+        return up ? i > 0 : i < groups.count - 1
+    }
+
+    /// 오른쪽 클릭 "위로/아래로 옮기기": 이웃 그룹과 자리를 바꾼다.
+    public static func shift(_ groups: [String], _ name: String, up: Bool) -> [String] {
+        guard canShift(groups, name, up: up), let i = groups.firstIndex(of: name) else { return groups }
+        var list = groups
+        list.swapAt(i, up ? i - 1 : i + 1)
+        return list
+    }
+}

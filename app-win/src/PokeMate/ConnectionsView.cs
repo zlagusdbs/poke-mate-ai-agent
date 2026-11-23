@@ -287,6 +287,7 @@ sealed class GitHubLoginDialog
         ChatUi.Id(close, "GitHubLoginClose");
         close.HorizontalAlignment = HorizontalAlignment.Right;
         body.Children.Add(close);
+        EditorStyle.ButtonKeys(window, new[] { close }, 0);
         Render(close);
         window.Closing += (_, _) => login.Cancel();
         window.Loaded += (_, _) =>

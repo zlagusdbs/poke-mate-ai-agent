@@ -84,3 +84,37 @@ public static class AlarmOrder
         return list;
     }
 }
+
+/// 그룹 순서 바꾸기 (순서는 alarm-groups.json 배열 순서, 맥 GroupOrder 와 같다). 모두 새 목록을 돌려준다.
+public static class GroupOrder
+{
+    /// 끌어다 놓기: name 을 target 자리로 옮긴다. 위로 끌면 target 앞, 아래로 끌면 target 뒤. target 이 null 이면 맨 끝으로.
+    public static List<string> Move(IReadOnlyList<string> groups, string name, string? target)
+    {
+        var list = groups.ToList();
+        var i = list.IndexOf(name);
+        if (i < 0 || name == target) return list;
+        var t = target == null ? list.Count - 1 : list.IndexOf(target);
+        if (t < 0) return list;
+        list.RemoveAt(i);
+        list.Insert(t, name);
+        return list;
+    }
+
+    public static bool CanShift(IReadOnlyList<string> groups, string name, bool up)
+    {
+        var i = groups.ToList().IndexOf(name);
+        return i >= 0 && (up ? i > 0 : i < groups.Count - 1);
+    }
+
+    /// 오른쪽 클릭 "위로/아래로 옮기기": 이웃 그룹과 자리를 바꾼다.
+    public static List<string> Shift(IReadOnlyList<string> groups, string name, bool up)
+    {
+        var list = groups.ToList();
+        if (!CanShift(groups, name, up)) return list;
+        var i = list.IndexOf(name);
+        var j = up ? i - 1 : i + 1;
+        (list[i], list[j]) = (list[j], list[i]);
+        return list;
+    }
+}

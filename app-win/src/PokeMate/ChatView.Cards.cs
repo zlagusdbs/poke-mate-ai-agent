@@ -690,6 +690,7 @@ public sealed class JiraDraftEditor : Window
         root.Children.Add(buttons);
         Content = root;
         save.IsEnabled = Draft.IsComplete;
+        EditorStyle.ButtonKeys(this, new[] { cancel, save }, 1);
     }
 
     UIElement Field(string title, string value, string hint, Action<string> changed, bool multiline = false)
