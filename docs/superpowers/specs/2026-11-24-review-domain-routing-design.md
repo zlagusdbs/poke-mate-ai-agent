@@ -175,7 +175,7 @@ PR 리뷰 요청
 | `app-win/src/PokeMate.Core/DomainReview.cs` | `Known()` 을 1·2단계로 바꾼다. `ReviewDomainBook` 사용을 없앤다. `ChoosePrompt` 의 후보·읽을거리를 고친다. `Source` 를 바꾼다 |
 | 새 Core 파일(예: `TeamConfig.cs`, `PathRules.cs`) | `teams.json`·`path-rules.json` 을 읽는다. 깨지면 없는 것으로 본다 |
 | `app-win/src/PokeMate.Core/MateCLI.cs` | 바뀐 파일 목록 조회 함수를 더한다 |
-| `app-win/src/PokeMate/WorkSessionCenter.cs` `HandleReview` | 0~3단계 순서로 바꾼다. 3단계 결과를 저장하는 코드를 없앤다 |
+| `app-win/src/PokeMate/WorkSessionCenter.cs` `HandleReview` | 1단계 → (못 정하면) 파일 목록 조회 → 2·3단계 순서로 바꾼다. 3단계 결과를 저장하는 코드를 없앤다 |
 | `app-win/src/PokeMate.Core/ReviewEval.cs`, `PokeMate.Eval` | 평가는 네트워크·PC 상태에 따라 달라지면 안 되므로 1단계 중 `domains.json` repos(Listed)만 쓴다. `Learned` 제거에 맞춰 고친다. (설계자 판단) |
 | `app-mac/Sources/PokeMateCore/{DomainReview,MateCLI,ReviewEval}.swift`, `app-mac/Sources/PokeMate/WorkSessionCenter.swift` | 위와 같은 동작 |
 | `PokeMate.CoreChecks` / `PokeMateCoreChecks` | 단계별 판정 테스트 |
