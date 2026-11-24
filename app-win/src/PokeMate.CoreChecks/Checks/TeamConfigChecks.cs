@@ -15,6 +15,10 @@ public static class TeamConfigChecks
         Check.That(TeamConfig.Parse("[1]") == null && TeamConfig.Parse("{") == null, "team: 깨진 파일은 없는 것으로");
         var none = TeamConfig.Parse("""{"myTeams":["gone"],"teams":{}}""");
         Check.That(none!.Candidates(map).SequenceEqual(new[] { "coupon", "discount", "product" }), "team: 쓸 팀이 없으면 domains.json 전체");
+        var maps = TeamConfig.Parse("""{"teams":{"a":{"kb":"k","repoMap":"raw/{repo}.md"},"b":{"kb":"k","repoMap":"raw/{domain}/x.md"},"c":{"kb":"k","repoMap":"raw/repos/{repo}-{domain}.md"},"d":{"kb":"k","repoMap":"raw\\{domain}\\{repo}.md"},"e":{"kb":"k","repoMap":"./raw/{domain}-team/{repo}.md"}}}""");
+        Check.That(maps!.Teams["a"].RepoMap == null && maps.Teams["b"].RepoMap == null && maps.Teams["c"].RepoMap == null
+                   && maps.Teams["d"].RepoMap == @"raw\{domain}\{repo}.md" && maps.Teams["e"].RepoMap == "./raw/{domain}-team/{repo}.md",
+                   "team: repoMap 은 {domain}·{repo} 가 다 있고 {domain} 이 마지막 경로 조각에 없어야 함 (아니면 null)");
         Check.That(DomainMap.ResolvePath("kb/x", @"C:\h") == @"C:\h\Workspace\kb\x" && DomainMap.ResolvePath("~/a", @"C:\h") == Paths.ExpandTilde("~/a", @"C:\h") && DomainMap.ResolvePath(@"D:\k", @"C:\h") == @"D:\k", "team: kb 경로 해석은 knowledge 와 같음");
     }
 }

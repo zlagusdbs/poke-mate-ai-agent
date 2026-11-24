@@ -1561,6 +1561,15 @@ do {
     check(TeamConfig.parse(Data("[1]".utf8)) == nil && TeamConfig.parse(Data("{".utf8)) == nil, "team: 깨진 파일은 없는 것으로")
     let none = TeamConfig.parse(Data(#"{"myTeams":["gone"],"teams":{}}"#.utf8))
     check(none?.candidates(map: map) == ["coupon", "discount", "product"], "team: 쓸 팀이 없으면 domains.json 전체")
+    let repoMaps = TeamConfig.parse(Data(#"{"teams":{"a":{"kb":"k","repoMap":"raw/{repo}.md"},"b":{"kb":"k","repoMap":"raw/{domain}/x.md"},"c":{"kb":"k","repoMap":"raw/repos/{repo}-{domain}.md"},"d":{"kb":"k","repoMap":"raw\\{domain}\\{repo}.md"},"e":{"kb":"k","repoMap":"./raw/{domain}-team/{repo}.md"}}}"#.utf8))
+    let mapA = repoMaps?.teams["a"]?.repoMap
+    let mapB = repoMaps?.teams["b"]?.repoMap
+    let mapC = repoMaps?.teams["c"]?.repoMap
+    let mapD = repoMaps?.teams["d"]?.repoMap
+    let mapE = repoMaps?.teams["e"]?.repoMap
+    let repoMapsOk = repoMaps != nil && mapA == nil && mapB == nil && mapC == nil
+    let repoMapsKept = mapD == #"raw\{domain}\{repo}.md"# && mapE == "./raw/{domain}-team/{repo}.md"
+    check(repoMapsOk && repoMapsKept, "team: repoMap 은 {domain}·{repo} 가 다 있고 {domain} 이 마지막 경로 조각에 없어야 함 (아니면 null)")
     check(DomainMap.resolvePath("kb/x", home: "/h") == "/h/Workspace/kb/x" && DomainMap.resolvePath("~/a", home: "/h") == "/h/a"
           && DomainMap.resolvePath("/k", home: "/h") == "/k", "team: kb 경로 해석은 knowledge 와 같음")
 }
@@ -1607,6 +1616,9 @@ do {
           && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"default\"}\n```", candidates: allCands)?.domain == "default"
           && DomainReview.extract(from: "```pokemate-domain\r\n{\"domain\": \"acme\"}\r\n```", candidates: allCands)?.why == "이유 없음",
           "review: 도메인 블록 읽기 (없는 도메인은 거절, default 는 됨)")
+    let spacedWhy = DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"  쿠폰\\n\\n함  \\t 화면\\r\\n끝 \"}\n```", candidates: allCands)
+    let blankWhy = DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"acme\", \"why\": \" \\n \"}\n```", candidates: allCands)
+    check(spacedWhy?.why == "쿠폰 함 화면 끝" && blankWhy?.why == "이유 없음", "review: 도메인 블록의 why 는 줄바꿈·탭 포함 공백 묶음을 빈칸 하나로 (비면 이유 없음)")
     let present: [String: Int] = ["/n/acme/checklist.md": 20, "/n/acme/notes.md": 12]
     let notes = DomainNotes(root: "/n", lines: { present[$0] })
     let empty = DomainNotes(root: "/n", lines: { _ in nil })
@@ -1704,6 +1716,23 @@ do {
     let notCandidate = DomainReview.route(target: ReviewTarget(owner: "acme", repo: "sample-item-api", number: 8, url: "u"), map: rmap, team: pricingOnly, rules: noRules,
                                           files: ["a.cs"], home: home)
     check(notCandidate.decided == nil, "route: 후보가 아닌 도메인의 repos 는 1단계에 쓰지 않음")
+    // 앱의 순서: 1단계가 정하면 파일을 조회하지 않는다. 못 정하면 조회하고, 조회 실패는 default·"파일 조회 실패"
+    final class RouteCalls: @unchecked Sendable { var fetches = 0; var rules = 0 }
+    let calls = RouteCalls()
+    let early = await DomainReview.resolve(target: ReviewTarget(owner: "acme", repo: "sample.web", number: 10, url: "u"), map: rmap, team: team,
+                                           rules: { calls.rules += 1; return rules }, home: home) { calls.fetches += 1; return nil }
+    let earlyOk = early.decided?.domain == "coupon" && early.decided?.source == DomainReview.Source.teamMap && early.hints.files.isEmpty
+    check(earlyOk && calls.fetches == 0 && calls.rules == 0, "route: 1단계가 정하면 파일을 조회하지 않음 (파일 없이 확정)")
+    let adminUndecided = ReviewTarget(owner: "example-org", repo: "shared-admin", number: 11, url: "u")
+    let failed = await DomainReview.resolve(target: adminUndecided, map: rmap, team: team,
+                                            rules: { calls.rules += 1; return rules }, home: home) { calls.fetches += 1; return nil }
+    let failedOk = failed.decided?.domain == "default" && failed.decided?.why == "파일 조회 실패" && failed.decided?.source == DomainReview.Source.fallback
+    check(failedOk && DomainReview.fetchFailed == "파일 조회 실패" && calls.fetches == 1 && calls.rules == 0,
+          "route: 1단계가 못 정한 뒤 파일 조회가 실패하면 default (2·3단계 없음)")
+    let later = await DomainReview.resolve(target: ReviewTarget(owner: "example-org", repo: "shared-admin", number: 12, url: "u"), map: rmap, team: team,
+                                           rules: { calls.rules += 1; return rules }, home: home) { calls.fetches += 1; return ["src/Areas/Item/B.cs"] }
+    let laterOk = later.decided?.domain == "product" && later.decided?.source == DomainReview.Source.pathRule && later.hints.files == ["src/Areas/Item/B.cs"]
+    check(laterOk && calls.fetches == 2 && calls.rules == 1, "route: 1단계가 못 정하면 파일을 조회해 2단계")
     let cands = DomainReview.candidates(map: rmap, team: team)
     check(DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"product\", \"why\": \"상품 화면\"}\n```", candidates: cands)?.domain == "product"
           && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"legacy\"}\n```", candidates: cands) == nil
@@ -1714,12 +1743,13 @@ do {
     let decidedBare = DomainReview.decide("```pokemate-domain\n{\"domain\": \"default\"}\n```", candidates: cands)
     let decidedLegacy = DomainReview.decide("```pokemate-domain\n{\"domain\": \"legacy\"}\n```", candidates: cands)
     let decidedFailed = DomainReview.decide(nil, candidates: cands)
-    check(decidedProduct == ("product", "상품 화면", DomainReview.Source.chosen)
-          && decidedNone == ("default", "맞는 도메인 없음", DomainReview.Source.fallback)
-          && decidedBare == ("default", undecided, DomainReview.Source.fallback)
-          && decidedLegacy == ("default", undecided, DomainReview.Source.fallback)
-          && decidedFailed == ("default", undecided, DomainReview.Source.fallback)
-          && DomainReview.undecided == undecided,
+    let ok1 = decidedProduct.domain == "product" && decidedProduct.why == "상품 화면" && decidedProduct.source == .chosen
+    let ok2 = decidedNone.domain == "default" && decidedNone.why == "맞는 도메인 없음" && decidedNone.source == .fallback
+    let ok3 = decidedBare.domain == "default" && decidedBare.why == undecided && decidedBare.source == .fallback
+    let ok4 = decidedLegacy.domain == "default" && decidedLegacy.why == undecided && decidedLegacy.source == .fallback
+    let ok5 = decidedFailed.domain == "default" && decidedFailed.why == undecided && decidedFailed.source == .fallback
+    let ok6 = DomainReview.undecided == undecided
+    check(ok1 && ok2 && ok3 && ok4 && ok5 && ok6,
           "route: 3단계 답 판정 (후보 Chosen, default·못 읽음·실패는 Fallback, 이유 없는 default 는 정하지 못함)")
     var guided = team
     guided.repoGuide = "example-org/repo-guide"
@@ -1733,8 +1763,8 @@ do {
     let manyFiles = (1...203).map { "f\($0).cs" }
     let many = DomainReview.choosePrompt(target: ReviewTarget(owner: "acme", repo: "sample-web", number: 5, url: "u"), map: rmap, team: team,
                                          hints: RouteHints(files: manyFiles, mapDomains: ["coupon", "discount"]), helper: "H")
-    check(many.contains("f200.cs") && !many.contains("f201.cs") && many.contains("외 3개") && many.contains("팀 KB 지도 후보: coupon, discount"),
-          "route: 바뀐 파일은 200개까지, 지도 후보")
+    check(many.contains("f200.cs") && !many.contains("f201.cs") && many.contains("외 3개") && many.contains("1단계 후보: coupon, discount") && !many.contains("팀 KB 지도 후보"),
+          "route: 바뀐 파일은 200개까지, 1단계 후보")
     let body = DomainReview.reviewPrompt(target: ReviewTarget(owner: "acme", repo: "sample.web", number: 1, url: "u"), domain: "coupon",
                                          why: "pricing 팀 KB raw/coupon/repos/Sample.Web.md", source: .teamMap, firstRun: true, notes: notes, helper: "H", context: "본문")
     check(body.contains("도메인: coupon — 팀 KB 지도: pricing 팀 KB raw/coupon/repos/Sample.Web.md"), "route: 확인한 범위 첫 줄 형식")
@@ -1781,6 +1811,8 @@ do {
           && ReviewEval.domain(for: cases[1], target: ReviewTarget.parse(url: cases[1].url)!, map: emap).source == .listed
           && missing.domain == "default" && missing.source == .fallback,
           "eval: 도메인은 문제에 적은 것 → domains.json repos → default")
+    let fixedEval = ReviewEval.domain(for: cases[0], target: target, map: emap)
+    check(fixedEval.why == "평가 문제에 정한 도메인" && fixedEval.source == .listed, "eval: 문제에 정한 도메인은 정해진 도메인(Listed), PR 판단 아님")
     let ep = ReviewEval.prompt(item: cases[0], target: target, domain: "acme", why: "평가", source: .chosen, notes: DomainNotes(root: "/n", lines: { _ in 3 }),
                                helper: "H", template: "리뷰 {{helper}} gh-diff\n{{knowledge}}", knowledge: "   - `kb`")
     check(ep.contains("리뷰 H gh-diff") && ep.contains("   - `kb`") && !ep.contains("{{") && ep.contains("```pokemate-eval") && ep.contains("링크: \(cases[0].url)")

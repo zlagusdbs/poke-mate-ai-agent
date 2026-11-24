@@ -73,7 +73,7 @@ public enum ReviewEval {
     /// 도메인: 문제에 적은 것 → domains.json 의 repos → default
     public static func domain(for item: ReviewEvalCase, target: ReviewTarget, map: DomainMap) -> (domain: String, why: String, source: DomainReview.Source) {
         if let fixed = item.domain, DomainReview.valid(fixed, map: map) {
-            return (fixed, "평가 문제에 정한 도메인", .chosen)
+            return (fixed, "평가 문제에 정한 도메인", .listed)
         }
         if let hit = DomainReview.listed(target, map: map) { return hit }
         return (DomainReview.fallback, "평가 문제에 도메인이 없고 domains.json 의 repos 에도 없음", .fallback)

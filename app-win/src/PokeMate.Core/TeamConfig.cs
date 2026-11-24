@@ -2,7 +2,7 @@ using System.Text.Json.Nodes;
 
 namespace PokeMate.Core;
 
-/// 팀 하나의 지식 저장소 정보. `Kb` 는 팀 KB 경로, `RepoMap` 은 `{repo}` 가 든 레포 설명 경로 패턴.
+/// 팀 하나의 지식 저장소 정보. `Kb` 는 팀 KB 경로, `RepoMap` 은 `{domain}`·`{repo}` 가 든 레포 설명 경로 패턴.
 public sealed record TeamEntry(string Kb, string? RepoMap, List<string> Domains);
 
 /// `local/teams.json`. 내 팀(MyTeams) 순서대로 도메인 후보를 만든다.
@@ -10,7 +10,7 @@ public sealed record TeamConfig(List<string> MyTeams, string? RepoGuide, Diction
 {
     public static string File => AppPaths.LocalFile("teams.json");
 
-    /// 객체가 아니면 null. `kb` 가 빈 팀은 뺀다. `repoMap` 에 `{repo}` 가 없으면 null.
+    /// 객체가 아니면 null. `kb` 가 빈 팀은 뺀다. `repoMap` 이 쓸 수 없는 패턴(`UsableRepoMap`)이면 null.
     public static TeamConfig? Parse(string? json)
     {
         if (Json.ParseObject(json) is not JsonObject obj) return null;
@@ -27,11 +27,19 @@ public sealed record TeamConfig(List<string> MyTeams, string? RepoGuide, Diction
                 if (key.Length == 0 || value is not JsonObject body) continue;
                 if (Text(body["kb"]) is not string kb) continue;
                 var repoMap = Text(body["repoMap"]);
-                if (repoMap != null && !repoMap.Contains("{repo}", StringComparison.Ordinal)) repoMap = null;
+                if (repoMap != null && !UsableRepoMap(repoMap)) repoMap = null;
                 teams[key] = new TeamEntry(kb, repoMap, Items(body["domains"]));
             }
         }
         return new TeamConfig(Items(obj["myTeams"]), Text(obj["repoGuide"]), teams);
+    }
+
+    /// `{domain}`·`{repo}` 가 다 있고, `{domain}` 이 마지막 경로 조각(문서 이름)에 없어야 한다 (`{domain}` 은 폴더 자리).
+    public static bool UsableRepoMap(string pattern)
+    {
+        if (!pattern.Contains("{domain}", StringComparison.Ordinal) || !pattern.Contains("{repo}", StringComparison.Ordinal)) return false;
+        var parts = pattern.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries).Where(p => p != ".").ToList();
+        return parts.Count > 0 && !parts[^1].Contains("{domain}", StringComparison.Ordinal);
     }
 
     /// 파일이 없거나 읽을 수 없으면 null

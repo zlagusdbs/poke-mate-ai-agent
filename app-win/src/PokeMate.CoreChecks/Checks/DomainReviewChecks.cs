@@ -32,6 +32,9 @@ public static class DomainReviewChecks
                    && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"default\"}\n```", allCands)?.Domain == "default"
                    && DomainReview.Extract("```pokemate-domain\r\n{\"domain\": \"acme\"}\r\n```", allCands) is { Why: "이유 없음" },
                    "review: 도메인 블록 읽기 (없는 도메인은 거절, default 는 됨)");
+        Check.That(DomainReview.Extract("```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"  쿠폰\\n\\n함  \\t 화면\\r\\n끝 \"}\n```", allCands) is { Why: "쿠폰 함 화면 끝" }
+                   && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"acme\", \"why\": \" \\n \"}\n```", allCands) is { Why: "이유 없음" },
+                   "review: 도메인 블록의 why 는 줄바꿈·탭 포함 공백 묶음을 빈칸 하나로 (비면 이유 없음)");
 
         // 노트 폴더 안의 점검표·노트는 항상 / 구분 경로로 안내한다 (Git Bash·Claude 가 그대로 읽는다)
         var present = new Dictionary<string, int> { ["C:/n/acme/checklist.md"] = 20, ["C:/n/acme/notes.md"] = 12 };
@@ -109,6 +112,24 @@ public static class DomainReviewChecks
                    "route: 팀 설정이 없으면 팀 KB 지도는 건너뛰고 domains.json repos 만");
         Check.That(DomainReview.Route(new ReviewTarget("acme", "sample-item-api", 8, "u"), map, team with { MyTeams = new List<string> { "pricing" } }, PathRules.Parse("{}"), new[] { "a.cs" }, tmp).Decided == null,
                    "route: 후보가 아닌 도메인의 repos 는 1단계에 쓰지 않음");
+        // 앱의 순서: 1단계가 정하면 파일을 조회하지 않는다. 못 정하면 조회하고, 조회 실패는 default·"파일 조회 실패"
+        var fetches = 0;
+        Task<List<string>?> NoFiles() { fetches++; return Task.FromResult<List<string>?>(null); }
+        Task<List<string>?> ItemFiles() { fetches++; return Task.FromResult<List<string>?>(new List<string> { "src/Areas/Item/B.cs" }); }
+        Task<List<string>?> Broken() { fetches++; throw new InvalidOperationException("helper 없음"); }
+        var rulesRead = 0;
+        PathRules CountedRules() { rulesRead++; return rules; }
+        var early = await DomainReview.Resolve(new ReviewTarget("acme", "sample.web", 10, "u"), map, team, CountedRules, NoFiles, tmp);
+        Check.That(early.Decided is { Domain: "coupon", Source: DomainReview.Source.TeamMap } && fetches == 0 && rulesRead == 0 && early.Hints.Files.Count == 0,
+                   "route: 1단계가 정하면 파일을 조회하지 않음 (파일 없이 확정)");
+        var failed = await DomainReview.Resolve(new ReviewTarget("example-org", "shared-admin", 11, "u"), map, team, CountedRules, NoFiles, tmp);
+        var thrown = await DomainReview.Resolve(new ReviewTarget("example-org", "shared-admin", 11, "u"), map, team, CountedRules, Broken, tmp);
+        Check.That(failed.Decided == ("default", "파일 조회 실패", DomainReview.Source.Fallback) && thrown.Decided == ("default", "파일 조회 실패", DomainReview.Source.Fallback)
+                   && DomainReview.FetchFailed == "파일 조회 실패" && fetches == 2 && rulesRead == 0,
+                   "route: 1단계가 못 정한 뒤 파일 조회가 실패하면 default (2·3단계 없음)");
+        var later = await DomainReview.Resolve(new ReviewTarget("example-org", "shared-admin", 12, "u"), map, team, CountedRules, ItemFiles, tmp);
+        Check.That(later.Decided is { Domain: "product", Source: DomainReview.Source.PathRule } && fetches == 3 && rulesRead == 1 && later.Hints.Files.SequenceEqual(new[] { "src/Areas/Item/B.cs" }),
+                   "route: 1단계가 못 정하면 파일을 조회해 2단계");
         var cands = DomainReview.Candidates(map, team);
         Check.That(DomainReview.Extract("```pokemate-domain\n{\"domain\": \"product\", \"why\": \"상품 화면\"}\n```", cands) is { Domain: "product" }
                    && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"legacy\"}\n```", cands) == null
@@ -126,7 +147,7 @@ public static class DomainReviewChecks
                    && !routeChooser.Contains("\\"), "route: 3단계 안내에 바뀐 파일 목록, 경로는 / 구분");
         var many = DomainReview.ChoosePrompt(new ReviewTarget("acme", "sample-web", 5, "u"), map, team,
                                              new RouteHints(Enumerable.Range(1, 203).Select(i => $"f{i}.cs").ToList(), Array.Empty<string>(), new[] { "coupon", "discount" }, new Dictionary<string, int>()), "H");
-        Check.That(many.Contains("f200.cs") && !many.Contains("f201.cs") && many.Contains("외 3개") && many.Contains("팀 KB 지도 후보: coupon, discount"), "route: 바뀐 파일은 200개까지, 지도 후보");
+        Check.That(many.Contains("f200.cs") && !many.Contains("f201.cs") && many.Contains("외 3개") && many.Contains("1단계 후보: coupon, discount") && !many.Contains("팀 KB 지도 후보"), "route: 바뀐 파일은 200개까지, 1단계 후보");
         var body = DomainReview.ReviewPrompt(new ReviewTarget("acme", "sample.web", 1, "u"), "coupon", "pricing 팀 KB raw/coupon/repos/Sample.Web.md", DomainReview.Source.TeamMap, true, notes, "H", "본문");
         Check.That(body.Contains("도메인: coupon — 팀 KB 지도: pricing 팀 KB raw/coupon/repos/Sample.Web.md"), "route: 확인한 범위 첫 줄 형식");
         Check.Remove(tmp);

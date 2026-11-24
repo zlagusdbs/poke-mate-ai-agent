@@ -40,7 +40,7 @@ public struct RouteHints: Equatable, Sendable {
 }
 
 /// PR 리뷰를 도메인 리뷰어 세션(`{도메인}:reviewer`)에 맡기는 흐름: 도메인 정하기와 리뷰 프롬프트.
-/// 도메인 정하기: 1. 팀 KB 지도·domains.json repos → 2. 경로 규칙 → 3. PR 판단(Claude) → default. 결과는 저장하지 않는다.
+/// 도메인 정하기: 1. 팀 KB 지도·domains.json repos → (못 정하면) 바뀐 파일 조회(실패하면 default) → 2. 경로 규칙 → 3. PR 판단(Claude) → default. 결과는 저장하지 않는다.
 public enum DomainReview {
     public static let tag = "pokemate-domain"
     public static let fallback = DomainMap.defaultKey
@@ -159,25 +159,61 @@ public enum DomainReview {
         return FileManager.default.fileExists(atPath: path, isDirectory: &flag) && flag.boolValue
     }
 
-    /// 1·2단계로 도메인을 정한다. 1단계 도메인이 정확히 하나면 첫 Hit, 아니면 경로 규칙이 한 도메인이면 `pathRule`.
-    /// 못 정하면 `decided` 는 nil 이고 `hints` 를 3단계(`choosePrompt`)에 넘긴다.
-    public static func route(target: ReviewTarget, map: DomainMap, team: TeamConfig?, rules: PathRules, files: [String],
-                             home: String = NSHomeDirectory()) -> (decided: Decision?, hints: RouteHints) {
+    /// 바뀐 파일 조회에 실패했을 때의 근거 (default 로 리뷰)
+    public static let fetchFailed = "파일 조회 실패"
+
+    /// 1단계 결과. `decided` 는 1단계 도메인이 정확히 하나일 때 첫 Hit, `mapDomains` 는 1단계 도메인들(중복 없이 나온 순서).
+    public struct RouteStart: Sendable {
+        public let candidates: [String]
+        public let decided: Decision?
+        public let sharedDocs: [String]
+        public let mapDomains: [String]
+    }
+
+    /// 1단계(팀 KB 지도·domains.json repos). 바뀐 파일이 필요 없다.
+    public static func start(target: ReviewTarget, map: DomainMap, team: TeamConfig?, home: String = NSHomeDirectory()) -> RouteStart {
         let cands = Self.candidates(map: map, team: team)
         let lookup = mapLookup(target: target, map: map, team: team, candidates: cands, home: home)
         var domains: [String] = []
         for hit in lookup.hits where !domains.contains(hit.domain) { domains.append(hit.domain) }
-        if domains.count == 1 {
-            let first: Decision = lookup.hits[0]
-            return (first, RouteHints(files: files, sharedDocs: lookup.sharedDocs, mapDomains: domains, ruleCounts: [:]))
+        let first: Decision? = domains.count == 1 ? lookup.hits[0] : nil
+        return RouteStart(candidates: cands, decided: first, sharedDocs: lookup.sharedDocs, mapDomains: domains)
+    }
+
+    /// 1단계에 이어 2단계(경로 규칙). 1단계가 정했으면 그 Hit, 아니면 경로 규칙이 한 도메인이면 `pathRule`.
+    /// 못 정하면 `decided` 는 nil 이고 `hints` 를 3단계(`choosePrompt`)에 넘긴다.
+    public static func finish(target: ReviewTarget, start: RouteStart, rules: PathRules, files: [String]) -> (decided: Decision?, hints: RouteHints) {
+        if let hit = start.decided {
+            return (hit, RouteHints(files: files, sharedDocs: start.sharedDocs, mapDomains: start.mapDomains, ruleCounts: [:]))
         }
-        let verdict = rules.judge(fullName: target.fullName, files: files, candidates: cands)
-        let routeHints = RouteHints(files: files, sharedDocs: lookup.sharedDocs, mapDomains: domains, ruleCounts: verdict.counts)
+        let verdict = rules.judge(fullName: target.fullName, files: files, candidates: start.candidates)
+        let routeHints = RouteHints(files: files, sharedDocs: start.sharedDocs, mapDomains: start.mapDomains, ruleCounts: verdict.counts)
         if let domain = verdict.domain {
-            let byRule: Decision = (domain, ruleWhy(rules, fullName: target.fullName, files: files, candidates: cands, domain: domain), .pathRule)
+            let byRule: Decision = (domain, ruleWhy(rules, fullName: target.fullName, files: files, candidates: start.candidates, domain: domain), .pathRule)
             return (byRule, routeHints)
         }
         return (nil, routeHints)
+    }
+
+    /// 1·2단계로 도메인을 정한다 (바뀐 파일을 이미 알 때). `start` → `finish`.
+    public static func route(target: ReviewTarget, map: DomainMap, team: TeamConfig?, rules: PathRules, files: [String],
+                             home: String = NSHomeDirectory()) -> (decided: Decision?, hints: RouteHints) {
+        finish(target: target, start: Self.start(target: target, map: map, team: team, home: home), rules: rules, files: files)
+    }
+
+    /// 앱의 도메인 정하기 순서: 1단계가 정하면 바뀐 파일을 조회하지 않는다. 못 정하면 `fetch` 로 바뀐 파일을 조회하고
+    /// (실패면 default·`fetchFailed`) 2단계. `decided` 가 nil 이면 `hints` 를 3단계에 넘긴다. `rules` 는 2단계에 갈 때만 읽는다.
+    public static func resolve(target: ReviewTarget, map: DomainMap, team: TeamConfig?, rules: () -> PathRules, home: String = NSHomeDirectory(),
+                               fetch: () async -> [String]?) async -> (decided: Decision?, hints: RouteHints) {
+        let begun = start(target: target, map: map, team: team, home: home)
+        if let hit = begun.decided {
+            return (hit, RouteHints(files: [], sharedDocs: begun.sharedDocs, mapDomains: begun.mapDomains, ruleCounts: [:]))
+        }
+        guard let files = await fetch() else {
+            let failed: Decision = (fallback, fetchFailed, .fallback)
+            return (failed, RouteHints(files: [], sharedDocs: begun.sharedDocs, mapDomains: begun.mapDomains, ruleCounts: [:]))
+        }
+        return finish(target: target, start: begun, rules: rules(), files: files)
     }
 
     /// 경로 규칙 근거: 그 도메인 규칙 중 처음 맞은 파일이 가장 많은 규칙(같으면 앞 규칙)의 와일드카드 앞 폴더와 그 규칙의 파일 수.
@@ -238,7 +274,7 @@ public enum DomainReview {
             output.append("- 경로 규칙 후보: " + ordered.map { "\($0.key) \($0.value)개" }.joined(separator: ", "))
         }
         if !hints.mapDomains.isEmpty {
-            output.append("- 팀 KB 지도 후보: " + hints.mapDomains.joined(separator: ", "))
+            output.append("- 1단계 후보: " + hints.mapDomains.joined(separator: ", "))
         }
         output += [
             "- 도메인 목록:",
@@ -253,7 +289,7 @@ public enum DomainReview {
         return output.joined(separator: "\n")
     }
 
-    /// 도메인 정하기 답에서 마지막 블록을 읽는다. 후보가 아니면 nil (default 는 됨).
+    /// 도메인 정하기 답에서 마지막 블록을 읽는다. 후보가 아니면 nil (default 는 됨). `why` 의 공백 묶음(줄바꿈 포함)은 빈칸 하나로.
     public static func extract(from text: String, candidates: [String]) -> (domain: String, why: String)? {
         guard let regex = try? NSRegularExpression(pattern: "```\(tag)[ \\t]*\\r?\\n(.*?)```", options: [.dotMatchesLineSeparators]),
               let m = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
@@ -261,7 +297,8 @@ public enum DomainReview {
               let object = try? JSONSerialization.jsonObject(with: Data(text[r].utf8)) as? [String: Any],
               let domain = (object["domain"] as? String)?.trimmingCharacters(in: .whitespaces),
               domain == fallback || candidates.contains(domain) else { return nil }
-        let why = (object["why"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // 근거는 한 줄로: 줄바꿈·탭을 포함한 공백 묶음을 빈칸 하나로 (앞뒤 공백은 없앤다)
+        let why = ((object["why"] as? String) ?? "").split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         return (domain, why.isEmpty ? "이유 없음" : why)
     }
 

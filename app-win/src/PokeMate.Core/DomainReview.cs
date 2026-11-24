@@ -46,7 +46,7 @@ public static class DomainReviewSourceExtensions
 }
 
 /// PR 리뷰를 도메인 리뷰어 세션(`{도메인}:reviewer`)에 맡기는 흐름: 도메인 정하기와 리뷰 프롬프트.
-/// 도메인 정하기: 1. 팀 KB 지도·domains.json repos → 2. 경로 규칙 → 3. PR 판단(Claude) → default. 결과는 저장하지 않는다.
+/// 도메인 정하기: 1. 팀 KB 지도·domains.json repos → (못 정하면) 바뀐 파일 조회(실패하면 default) → 2. 경로 규칙 → 3. PR 판단(Claude) → default. 결과는 저장하지 않는다.
 public static class DomainReview
 {
     public const string Tag = "pokemate-domain";
@@ -159,19 +159,53 @@ public static class DomainReview
         catch { return null; }
     }
 
-    /// 1·2단계로 도메인을 정한다. 1단계 도메인이 정확히 하나면 첫 Hit, 아니면 경로 규칙이 한 도메인이면 `PathRule`.
-    /// 못 정하면 `Decided` 는 null 이고 `Hints` 를 3단계(`ChoosePrompt`)에 넘긴다.
-    public static ((string Domain, string Why, Source Source)? Decided, RouteHints Hints) Route(ReviewTarget target, DomainMap map, TeamConfig? team, PathRules rules,
-                                                                                               IReadOnlyList<string> files, string? home = null)
+    /// 바뀐 파일 조회에 실패했을 때의 근거 (default 로 리뷰)
+    public const string FetchFailed = "파일 조회 실패";
+
+    /// 1단계 결과. `Decided` 는 1단계 도메인이 정확히 하나일 때 첫 Hit, `MapDomains` 는 1단계 도메인들(중복 없이 나온 순서).
+    public sealed record RouteStart(IReadOnlyList<string> Candidates, (string Domain, string Why, Source Source)? Decided, IReadOnlyList<string> SharedDocs,
+                                    IReadOnlyList<string> MapDomains);
+
+    /// 1단계(팀 KB 지도·domains.json repos). 바뀐 파일이 필요 없다.
+    public static RouteStart Start(ReviewTarget target, DomainMap map, TeamConfig? team, string? home = null)
     {
         var candidates = Candidates(map, team);
         var (hits, shared) = MapLookup(target, map, team, candidates, home);
         var domains = hits.Select(h => h.Domain).Distinct().ToList();
-        if (domains.Count == 1) return (hits[0], new RouteHints(files, shared, domains, new Dictionary<string, int>()));
-        var verdict = rules.Judge(target.FullName, files, candidates);
-        var hints = new RouteHints(files, shared, domains, verdict.Counts);
-        if (verdict.Domain is string domain) return ((domain, RuleWhy(rules, target.FullName, files, candidates, domain), Source.PathRule), hints);
+        return new RouteStart(candidates, domains.Count == 1 ? hits[0] : null, shared, domains);
+    }
+
+    /// 1단계에 이어 2단계(경로 규칙). 1단계가 정했으면 그 Hit, 아니면 경로 규칙이 한 도메인이면 `PathRule`.
+    /// 못 정하면 `Decided` 는 null 이고 `Hints` 를 3단계(`ChoosePrompt`)에 넘긴다.
+    public static ((string Domain, string Why, Source Source)? Decided, RouteHints Hints) Finish(ReviewTarget target, RouteStart start, PathRules rules,
+                                                                                                  IReadOnlyList<string> files)
+    {
+        if (start.Decided is { } hit) return (hit, new RouteHints(files, start.SharedDocs, start.MapDomains, new Dictionary<string, int>()));
+        var verdict = rules.Judge(target.FullName, files, start.Candidates);
+        var hints = new RouteHints(files, start.SharedDocs, start.MapDomains, verdict.Counts);
+        if (verdict.Domain is string domain) return ((domain, RuleWhy(rules, target.FullName, files, start.Candidates, domain), Source.PathRule), hints);
         return (null, hints);
+    }
+
+    /// 1·2단계로 도메인을 정한다 (바뀐 파일을 이미 알 때). `Start` → `Finish`.
+    public static ((string Domain, string Why, Source Source)? Decided, RouteHints Hints) Route(ReviewTarget target, DomainMap map, TeamConfig? team, PathRules rules,
+                                                                                               IReadOnlyList<string> files, string? home = null) =>
+        Finish(target, Start(target, map, team, home), rules, files);
+
+    /// 앱의 도메인 정하기 순서: 1단계가 정하면 바뀐 파일을 조회하지 않는다. 못 정하면 `fetch` 로 바뀐 파일을 조회하고
+    /// (실패·예외면 default·`FetchFailed`) 2단계. `Decided` 가 null 이면 `Hints` 를 3단계에 넘긴다. `rules` 는 2단계에 갈 때만 읽는다.
+    public static async Task<((string Domain, string Why, Source Source)? Decided, RouteHints Hints)> Resolve(ReviewTarget target, DomainMap map, TeamConfig? team,
+                                                                                                             Func<PathRules> rules, Func<Task<List<string>?>> fetch,
+                                                                                                             string? home = null)
+    {
+        var start = Start(target, map, team, home);
+        if (start.Decided is { } hit) return (hit, new RouteHints(Array.Empty<string>(), start.SharedDocs, start.MapDomains, new Dictionary<string, int>()));
+        List<string>? files;
+        try { files = await fetch(); }
+        catch { files = null; }   // helper 를 실행하지 못함 → 파일 조회 실패
+        if (files == null)
+            return ((Fallback, FetchFailed, Source.Fallback), new RouteHints(Array.Empty<string>(), start.SharedDocs, start.MapDomains, new Dictionary<string, int>()));
+        return Finish(target, start, rules(), files);
     }
 
     /// 경로 규칙 근거: 그 도메인 규칙 중 처음 맞은 파일이 가장 많은 규칙(같으면 앞 규칙)의 와일드카드 앞 폴더와 그 규칙의 파일 수.
@@ -236,7 +270,7 @@ public static class DomainReview
         if (hints.RuleCounts.Count > 0)
             output.Add("- 경로 규칙 후보: " + string.Join(", ", hints.RuleCounts.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key} {kv.Value}개")));
         if (hints.MapDomains.Count > 0)
-            output.Add("- 팀 KB 지도 후보: " + string.Join(", ", hints.MapDomains));
+            output.Add("- 1단계 후보: " + string.Join(", ", hints.MapDomains));
         output.AddRange(new[]
         {
             "- 도메인 목록:",
@@ -251,7 +285,7 @@ public static class DomainReview
         return string.Join("\n", output);
     }
 
-    /// 도메인 정하기 답에서 마지막 블록을 읽는다. 후보가 아니면 null (default 는 됨).
+    /// 도메인 정하기 답에서 마지막 블록을 읽는다. 후보가 아니면 null (default 는 됨). `why` 의 공백 묶음(줄바꿈 포함)은 빈칸 하나로.
     public static (string Domain, string Why)? Extract(string text, IReadOnlyCollection<string> candidates)
     {
         var m = Block.Matches(text).LastOrDefault();
@@ -259,7 +293,8 @@ public static class DomainReview
         if (Json.Str(obj["domain"]) is not string raw) return null;
         var domain = SwiftText.TrimSpaces(raw);
         if (domain != Fallback && !candidates.Contains(domain)) return null;
-        var why = SwiftText.Trim(Json.Str(obj["why"]) ?? "");
+        // 근거는 한 줄로: 줄바꿈·탭을 포함한 공백 묶음을 빈칸 하나로 (앞뒤 공백은 없앤다)
+        var why = string.Join(" ", (Json.Str(obj["why"]) ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         return (domain, why.Length == 0 ? "이유 없음" : why);
     }
 

@@ -31,6 +31,7 @@ public static class ReviewEvalChecks
                    && ReviewEval.Domain(cases[1], ReviewTarget.Parse(cases[1].Url)!, emap).Source == DomainReview.Source.Listed
                    && ReviewEval.Domain(new ReviewEvalCase("x", cases[0].Url, "nope"), target, emap) is { Domain: "default", Source: DomainReview.Source.Fallback },
                    "eval: 도메인은 문제에 적은 것 → domains.json repos → default");
+        Check.That(ReviewEval.Domain(cases[0], target, emap) is { Why: "평가 문제에 정한 도메인", Source: DomainReview.Source.Listed }, "eval: 문제에 정한 도메인은 정해진 도메인(Listed), PR 판단 아님");
         var ep = ReviewEval.Prompt(cases[0], target, "acme", "평가", DomainReview.Source.Chosen, new DomainNotes(@"C:\n", lines: _ => 3),
                                    "H", "리뷰 {{helper}} gh-diff\n{{knowledge}}", "   - `kb`");
         Check.That(ep.Contains("리뷰 H gh-diff") && ep.Contains("   - `kb`") && !ep.Contains("{{") && ep.Contains("```pokemate-eval") && ep.Contains("링크: " + cases[0].Url)

@@ -1,6 +1,6 @@
 import Foundation
 
-/// 팀 하나의 지식 저장소 정보. `kb` 는 팀 KB 경로, `repoMap` 은 `{repo}` 가 든 레포 설명 경로 패턴.
+/// 팀 하나의 지식 저장소 정보. `kb` 는 팀 KB 경로, `repoMap` 은 `{domain}`·`{repo}` 가 든 레포 설명 경로 패턴.
 public struct TeamEntry: Equatable, Sendable {
     public var kb: String
     public var repoMap: String?
@@ -27,7 +27,7 @@ public struct TeamConfig: Equatable, Sendable {
 
     public static var file: URL { AppPaths.localFile("teams.json") }
 
-    /// 객체가 아니면 nil. `kb` 가 빈 팀은 뺀다. `repoMap` 에 `{repo}` 가 없으면 nil.
+    /// 객체가 아니면 nil. `kb` 가 빈 팀은 뺀다. `repoMap` 이 쓸 수 없는 패턴(`usableRepoMap`)이면 nil.
     public static func parse(_ data: Data?) -> TeamConfig? {
         guard let data, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         func items(_ value: Any?) -> [String] {
@@ -42,10 +42,18 @@ public struct TeamConfig: Equatable, Sendable {
             let key = name.trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty, let body = value as? [String: Any], let kb = text(body["kb"]) else { continue }
             var repoMap = text(body["repoMap"])
-            if let pattern = repoMap, !pattern.contains("{repo}") { repoMap = nil }
+            if let pattern = repoMap, !usableRepoMap(pattern) { repoMap = nil }
             teams[key] = TeamEntry(kb: kb, repoMap: repoMap, domains: items(body["domains"]))
         }
         return TeamConfig(myTeams: items(object["myTeams"]), repoGuide: text(object["repoGuide"]), teams: teams)
+    }
+
+    /// `{domain}`·`{repo}` 가 다 있고, `{domain}` 이 마지막 경로 조각(문서 이름)에 없어야 한다 (`{domain}` 은 폴더 자리).
+    public static func usableRepoMap(_ pattern: String) -> Bool {
+        guard pattern.contains("{domain}"), pattern.contains("{repo}") else { return false }
+        let parts = pattern.replacingOccurrences(of: "\\", with: "/").split(separator: "/").map(String.init).filter { $0 != "." }
+        guard let last = parts.last else { return false }
+        return !last.contains("{domain}")
     }
 
     /// 파일이 없거나 읽을 수 없으면 nil

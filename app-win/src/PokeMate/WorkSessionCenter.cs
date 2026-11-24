@@ -726,7 +726,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
     // MARK: 도메인 리뷰어
 
     /// GitHub PR 리뷰 요청: PR 마다 도메인을 정해 그 도메인의 리뷰어 세션으로 리뷰한다. PR 이 아니면 레포별 작업 세션으로.
-    /// 0. 바뀐 파일 조회(실패하면 default) → 1. 팀 KB 지도·domains.json repos → 2. 경로 규칙 → 3. PR 판단(Claude, 저장 안 함) → default.
+    /// 1. 팀 KB 지도·domains.json repos → (못 정하면) 바뀐 파일 조회(실패하면 default) → 2. 경로 규칙 → 3. PR 판단(Claude, 저장 안 함) → default.
     public void HandleReview(Alarm alarm, EventItem item, string prompt, string title, ClaudeCommand.WriteAccess access,
                              ChatSession chat, Action<ClaudeResponse, RunUsage?> completion)
     {
@@ -740,34 +740,26 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         _ = RouteReview(target, context, alarm, title, access, chat, completion);
     }
 
-    /// 0~2단계는 UI 밖에서 한다(helper 실행·팀 KB 폴더 훑기). 이어지는 일은 UI 에서. `RoutingSlot` 표시는 어느 길로 가든 지운다.
+    /// 1·0·2단계는 UI 밖에서 한다(팀 KB 폴더 훑기·helper 실행, `DomainReview.Resolve`). 이어지는 일은 UI 에서. `RoutingSlot` 표시는 어느 길로 가든 지운다.
     async Task RouteReview(ReviewTarget target, string context, Alarm alarm, string title, ClaudeCommand.WriteAccess access,
                            ChatSession chat, Action<ClaudeResponse, RunUsage?> completion)
     {
         var settings = AppPaths.LoadSettings();
         var map = DomainMap.Load();
         var team = TeamConfig.Load();
-        List<string>? files = null;
         ((string Domain, string Why, DomainReview.Source Source)? Decided, RouteHints Hints)? route = null;
-        async Task Fetch()
+        async Task Work()
         {
-            try { files = await MateCLI.PullFiles(target, settings); }
-            catch { files = null; }   // helper 를 실행하지 못함 → 파일 조회 실패
-            if (files == null) return;
-            try { route = DomainReview.Route(target, map, team, PathRules.Load(), files); }
+            // 1단계가 정하면 파일을 조회하지 않는다. 조회 실패는 Resolve 가 default·"파일 조회 실패" 로 돌려준다.
+            try { route = await DomainReview.Resolve(target, map, team, () => PathRules.Load(), () => MateCLI.PullFiles(target, settings)); }
             catch { route = null; }   // 판정 실패 → default
         }
-        await Task.Run(Fetch);
+        await Task.Run(Work);
         await OnUi(() =>
         {
             var waiting = false;   // 3단계 실행에 넘겼으면 그 끝에서 RoutingSlot 을 지운다
             try
             {
-                if (files == null)
-                {
-                    EnqueueReview(target, DomainReview.Fallback, "파일 조회 실패", DomainReview.Source.Fallback, context, alarm, title, access, chat, completion);
-                    return Task.CompletedTask;
-                }
                 if (route is not { } routed)
                 {
                     EnqueueReview(target, DomainReview.Fallback, DomainReview.Undecided, DomainReview.Source.Fallback, context, alarm, title, access, chat, completion);
