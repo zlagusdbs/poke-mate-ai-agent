@@ -725,7 +725,11 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
 
     // MARK: 도메인 리뷰어
 
-    /// GitHub PR 리뷰 요청: 도메인을 정해(이미 아는 PR 레포면 바로) 그 도메인의 리뷰어 세션으로 리뷰한다. PR 이 아니면 레포별 작업 세션으로.
+    /// 3단계(PR 판단)도 못 정했을 때의 근거
+    static readonly string Undecided = $"도메인을 정하지 못해 {DomainReview.Fallback} 로 리뷰";
+
+    /// GitHub PR 리뷰 요청: PR 마다 도메인을 정해 그 도메인의 리뷰어 세션으로 리뷰한다. PR 이 아니면 레포별 작업 세션으로.
+    /// 0. 바뀐 파일 조회(실패하면 default) → 1. 팀 KB 지도·domains.json repos → 2. 경로 규칙 → 3. PR 판단(Claude, 저장 안 함) → default.
     public void HandleReview(Alarm alarm, EventItem item, string prompt, string title, ClaudeCommand.WriteAccess access,
                              ChatSession chat, Action<ClaudeResponse, RunUsage?> completion)
     {
@@ -735,29 +739,74 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
             return;
         }
         var context = $"{PipelineEvent(item)}\n\n요청: {prompt}";
+        SetRunning(RoutingSlot, target.Label);
+        _ = RouteReview(target, context, alarm, title, access, chat, completion);
+    }
+
+    /// 0~2단계는 UI 밖에서 한다(helper 실행·팀 KB 폴더 훑기). 이어지는 일은 UI 에서. `RoutingSlot` 표시는 어느 길로 가든 지운다.
+    async Task RouteReview(ReviewTarget target, string context, Alarm alarm, string title, ClaudeCommand.WriteAccess access,
+                           ChatSession chat, Action<ClaudeResponse, RunUsage?> completion)
+    {
+        var settings = AppPaths.LoadSettings();
         var map = DomainMap.Load();
         var team = TeamConfig.Load();
-        var route = DomainReview.Route(target, map, team, PathRules.Load(), Array.Empty<string>());
-        if (route.Decided is { } hit)
+        List<string>? files = null;
+        ((string Domain, string Why, DomainReview.Source Source)? Decided, RouteHints Hints)? route = null;
+        async Task Fetch()
         {
-            EnqueueReview(target, hit.Domain, hit.Why, hit.Source, context, alarm, title, access, chat, completion);
-            return;
+            try { files = await MateCLI.PullFiles(target, settings); }
+            catch { files = null; }   // helper 를 실행하지 못함 → 파일 조회 실패
+            if (files == null) return;
+            try { route = DomainReview.Route(target, map, team, PathRules.Load(), files); }
+            catch { route = null; }   // 판정 실패 → default
         }
-        var helper = PipelineAccess.Helper(AppPaths.LoadSettings());
-        var readOnly = new ClaudeCommand.WriteAccess(new[] { $"Bash({helper} gh-get:*)", $"Bash({helper} jira-get:*)" }, Array.Empty<string>());
-        SetRunning(RoutingSlot, target.Label);
-        chat.RunAutomation($"{title} · 도메인 정하기", DomainReview.ChoosePrompt(target, map, team, route.Hints, helper), readOnly, (response, _) =>
+        await Task.Run(Fetch);
+        await OnUi(() =>
         {
-            SetRunning(RoutingSlot, null);
-            var domain = DomainReview.Fallback;
-            var why = $"도메인을 정하지 못해 {DomainReview.Fallback} 로 리뷰";
-            if (response is ClaudeResponse.Success success && DomainReview.Extract(success.Text, DomainReview.Candidates(map, team)) is { } choice)
+            var waiting = false;   // 3단계 실행에 넘겼으면 그 끝에서 RoutingSlot 을 지운다
+            try
             {
-                domain = choice.Domain;
-                why = choice.Why;
+                if (files == null)
+                {
+                    EnqueueReview(target, DomainReview.Fallback, "파일 조회 실패", DomainReview.Source.Fallback, context, alarm, title, access, chat, completion);
+                    return Task.CompletedTask;
+                }
+                if (route is not { } routed)
+                {
+                    EnqueueReview(target, DomainReview.Fallback, Undecided, DomainReview.Source.Fallback, context, alarm, title, access, chat, completion);
+                    return Task.CompletedTask;
+                }
+                if (routed.Decided is { } hit)
+                {
+                    EnqueueReview(target, hit.Domain, hit.Why, hit.Source, context, alarm, title, access, chat, completion);
+                    return Task.CompletedTask;
+                }
+                // 3단계: 읽기 권한은 gh-get·jira-get 만. 넘긴 팀 KB 공용 문서를 읽을 수 있게 내 팀 KB 폴더를 더한다.
+                var helper = PipelineAccess.Helper(settings);
+                var dirs = (team?.Mine() ?? new List<(string Team, TeamEntry Entry)>()).Select(m => DomainMap.ResolvePath(m.Entry.Kb, Paths.Home)).Distinct().ToList();
+                var readOnly = new ClaudeCommand.WriteAccess(new[] { $"Bash({helper} gh-get:*)", $"Bash({helper} jira-get:*)" }, dirs);
+                var candidates = DomainReview.Candidates(map, team);
+                chat.RunAutomation($"{title} · 도메인 정하기", DomainReview.ChoosePrompt(target, map, team, routed.Hints, helper), readOnly, (response, _) =>
+                {
+                    SetRunning(RoutingSlot, null);
+                    // 결과는 이번 PR 에만 쓴다 (저장하지 않음)
+                    var (domain, why, source) = (DomainReview.Fallback, Undecided, DomainReview.Source.Fallback);
+                    if (response is ClaudeResponse.Success success && DomainReview.Extract(success.Text, candidates) is { } choice)
+                        (domain, why, source) = (choice.Domain, choice.Why, choice.Domain == DomainReview.Fallback ? DomainReview.Source.Fallback : DomainReview.Source.Chosen);
+                    EnqueueReview(target, domain, why, source, context, alarm, title, access, chat, completion);
+                }, TimeSpan.FromSeconds(600), quiet: true);
+                waiting = true;
             }
-            EnqueueReview(target, domain, why, DomainReview.Source.Chosen, context, alarm, title, access, chat, completion);
-        }, TimeSpan.FromSeconds(600), quiet: true);
+            catch (Exception e)
+            {
+                completion(new ClaudeResponse.Failure(new ClaudeFailure.Other($"리뷰 도메인을 정하지 못했어요: {target.Label} ({e.Message})")), null);
+            }
+            finally
+            {
+                if (!waiting) SetRunning(RoutingSlot, null);
+            }
+            return Task.CompletedTask;
+        });
     }
 
     void EnqueueReview(ReviewTarget target, string domain, string why, DomainReview.Source source, string context, Alarm alarm, string title,
@@ -773,7 +822,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         var label = $"리뷰 {target.Label}";
         RemoveQueued(domain, label);
         SetRunning(domain, label);
-        SetReviewing(domain, $"{label} · {why}");
+        SetReviewing(domain, $"{label} · {source.Raw()}: {why}");
         var key = DomainReview.SessionKey(domain);
         // 세션은 PR 한 건마다 (PR 파일의 sessions). 새로 시작하면 작업 탭 칸의 앞 세션은 보관하고 이유를 남긴다.
         var (review, decision) = ReviewCase.Begin(target, domain, new SessionPolicy(AppPaths.LoadSettings()), null, DateTimeOffset.Now);

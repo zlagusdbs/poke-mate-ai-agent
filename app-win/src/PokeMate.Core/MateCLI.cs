@@ -42,6 +42,24 @@ public static class MateCLI
         return Decode<List<EventItem>>(output);
     }
 
+    /// PR 의 바뀐 파일 목록 (helper `gh-get … /files --paginate`). 실패하거나 시간이 넘으면 null, 바뀐 파일이 없으면 빈 목록.
+    public static async Task<List<string>?> PullFiles(ReviewTarget target, AppSettings settings)
+    {
+        try
+        {
+            var output = await Run(new[] { "auto", "gh-get", $"repos/{target.FullName}/pulls/{target.Number}/files", "--paginate", "--jq", ".[].filename" }, null, settings);
+            return output.ExitCode == 0 ? ParseFileList(output.Stdout) : null;
+        }
+        catch (MateCLIError) { return null; }
+    }
+
+    /// 한 줄에 파일 하나. 앞뒤 공백·빈 줄을 빼고, 순서를 지키며 중복을 없앤다 (여러 쪽이 이어 붙어도 된다).
+    public static List<string> ParseFileList(string stdout)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return stdout.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0 && seen.Add(line)).ToList();
+    }
+
     sealed record Failure(string Error, string? Detail);
 
     /// 이슈 등록. 사용자가 확인 카드에서 [Jira에 등록]을 눌렀을 때만 부른다.

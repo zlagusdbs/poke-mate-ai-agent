@@ -90,6 +90,15 @@ public static class DomainReviewChecks
         Check.That(byRule.Decided?.Why == "src/Areas/Item 아래 1개 파일"
                    && DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 4, "u"), map, team, rules, new[] { "src/Areas/Coupon/A.cs", "src/Areas/Coupon/B/C.cs", "README.md" }, tmp).Decided?.Why == "src/Areas/Coupon 아래 2개 파일",
                    "route: 경로 규칙 근거는 규칙 경로의 와일드카드 앞 폴더와 파일 수");
+        var loose = PathRules.Parse("""{"example-org/shared-admin": [{"path": "Coupon*/**", "domain": "coupon"}, {"path": "**/Item.cs", "domain": "product"}]}""");
+        Check.That(DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 4, "u"), map, team, loose, new[] { "CouponA/x.cs", "CouponB/y/z.cs" }, tmp).Decided?.Why == "Coupon*/** 에 맞는 파일 2개"
+                   && DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 4, "u"), map, team, loose, new[] { "src/Item.cs" }, tmp).Decided?.Why == "**/Item.cs 에 맞는 파일 1개",
+                   "route: 와일드카드 앞 폴더가 없는 규칙의 근거는 glob 그대로");
+        var unusable = team with { Teams = new Dictionary<string, TeamEntry> { ["pricing"] = new("kb/pricing-kb", "raw/{domain}/repos/{repo}.md", new List<string> { "legacy" }) } };
+        Check.That(DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 9, "u"), map, unusable, PathRules.Parse("{}"), new[] { "a.cs" }, tmp) is { Decided: null } skipped
+                   && skipped.Hints.SharedDocs.Count == 0 && skipped.Hints.MapDomains.Count == 0,
+                   "route: 쓸 수 있는 팀 도메인이 없으면 팀 KB 폴더를 훑지 않음");
+        Check.That(MateCLI.ParseFileList("a.cs\r\n\r\n b.cs \nc.cs\na.cs\n").SequenceEqual(new[] { "a.cs", "b.cs", "c.cs" }) && MateCLI.ParseFileList("").Count == 0, "review: 바뀐 파일 목록 읽기 (여러 쪽·빈 줄·CRLF)");
         // sample-web 이 coupon·discount 두 폴더에 다 있는 경우 (파일 추가 후)
         Doc("coupon/repos/sample-web.md");
         Doc("discount/repos/sample-web.md");

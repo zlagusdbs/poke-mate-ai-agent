@@ -76,6 +76,7 @@ public static class DomainReview
 
     /// 1단계. 내 팀마다 `repoMap` 의 `{domain}` 자리 폴더를 훑어 `{repo}` 문서를 대소문자 무시로 찾는다.
     /// 폴더가 그 팀의 후보 도메인이면 Hit(`TeamMap`), 아니면 그 문서를 공용 문서(`SharedDocs`, `/` 구분 전체 경로)로 넘긴다. 팀 KB 폴더가 없으면 건너뛴다.
+    /// 쓸 수 있는 팀 도메인(domains.json 에 있는 것)이 하나도 없으면 팀 KB 는 훑지 않는다.
     /// 이어서 후보 도메인의 domains.json repos 에 레포가 있으면 Hit(`Listed`).
     public static (List<(string Domain, string Why, Source Source)> Hits, List<string> SharedDocs) MapLookup(ReviewTarget target, DomainMap map, TeamConfig? team,
                                                                                                          IReadOnlyList<string> candidates, string? home = null)
@@ -83,7 +84,10 @@ public static class DomainReview
         home ??= Paths.Home;
         var hits = new List<(string Domain, string Why, Source Source)>();
         var shared = new List<string>();
-        foreach (var (name, entry) in team?.Mine() ?? new List<(string Team, TeamEntry Entry)>())
+        // 쓸 수 있는 팀(domains.json 에 있는 도메인을 가진 팀)이 하나도 없으면 팀 KB 지도는 건너뛰고 domains.json repos 만 본다 (스펙 4-2)
+        var mine = team?.Mine() ?? new List<(string Team, TeamEntry Entry)>();
+        if (!mine.Any(m => m.Entry.Domains.Any(map.Domains.ContainsKey))) mine.Clear();
+        foreach (var (name, entry) in mine)
         {
             if (entry.RepoMap is not string pattern) continue;
             foreach (var doc in RepoDocs(DomainMap.ResolvePath(entry.Kb, home), pattern, target.Repo))
@@ -184,18 +188,20 @@ public static class DomainReview
         var best = -1;
         for (var i = 0; i < active.Count; i++)
             if (active[i].Domain == domain && (best < 0 || counts[i] > counts[best])) best = i;
-        return best < 0 ? "" : $"{RuleFolder(active[best].Path)} 아래 {counts[best]}개 파일";
+        if (best < 0) return "";
+        var glob = active[best].Path;
+        return RuleFolder(glob) is string folder ? $"{folder} 아래 {counts[best]}개 파일" : $"{glob} 에 맞는 파일 {counts[best]}개";
     }
 
-    /// glob 의 첫 와일드카드(`*`·`?`) 앞 폴더. 그런 폴더가 없으면(맨 앞부터 와일드카드) glob 그대로.
-    static string RuleFolder(string glob)
+    /// glob 의 첫 와일드카드(`*`·`?`) 앞 폴더. 와일드카드 앞에 폴더가 없으면(`Coupon*/**`·`**/x.cs`) null.
+    static string? RuleFolder(string glob)
     {
         var g = glob.Replace('\\', '/');
         while (g.StartsWith("./", StringComparison.Ordinal) || g.StartsWith("/", StringComparison.Ordinal)) g = g[(g[0] == '.' ? 2 : 1)..];
         var cut = g.IndexOfAny(new[] { '*', '?' });
         var head = cut < 0 ? g : g[..cut];
         var slash = head.LastIndexOf('/');
-        return slash > 0 ? head[..slash] : g;
+        return slash > 0 ? head[..slash] : null;
     }
 
     /// 3단계: 리뷰하지 않고 도메인만 정하게 하는 프롬프트 (읽기만). 후보는 `Candidates` 와 default.
