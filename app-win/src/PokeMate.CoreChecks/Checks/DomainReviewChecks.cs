@@ -113,6 +113,12 @@ public static class DomainReviewChecks
         Check.That(DomainReview.Extract("```pokemate-domain\n{\"domain\": \"product\", \"why\": \"상품 화면\"}\n```", cands) is { Domain: "product" }
                    && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"legacy\"}\n```", cands) == null
                    && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"default\"}\n```", cands)?.Domain == "default", "route: 3단계 답은 후보·default 만");
+        Check.That(DomainReview.Decide("```pokemate-domain\n{\"domain\": \"product\", \"why\": \"상품 화면\"}\n```", cands) == ("product", "상품 화면", DomainReview.Source.Chosen)
+                   && DomainReview.Decide("```pokemate-domain\n{\"domain\": \"default\", \"why\": \"맞는 도메인 없음\"}\n```", cands) == ("default", "맞는 도메인 없음", DomainReview.Source.Fallback)
+                   && DomainReview.Decide("```pokemate-domain\n{\"domain\": \"default\"}\n```", cands) == ("default", "도메인을 정하지 못해 default 로 리뷰", DomainReview.Source.Fallback)
+                   && DomainReview.Decide("```pokemate-domain\n{\"domain\": \"legacy\"}\n```", cands) == ("default", "도메인을 정하지 못해 default 로 리뷰", DomainReview.Source.Fallback)
+                   && DomainReview.Decide(null, cands) == ("default", "도메인을 정하지 못해 default 로 리뷰", DomainReview.Source.Fallback),
+                   "route: 3단계 답 판정 (후보 Chosen, default·못 읽음·실패는 Fallback, 이유 없는 default 는 정하지 못함)");
         var routeChooser = DomainReview.ChoosePrompt(new ReviewTarget("example-org", "shared-admin", 3, "u"), map, team with { RepoGuide = "example-org/repo-guide" }, shared.Hints, "H");
         Check.That(routeChooser.Contains("- product (product 팀)") && routeChooser.Contains("H gh-get repos/example-org/repo-guide/contents/maps/example-org/shared-admin.md")
                    && routeChooser.Contains("경로 규칙 후보: coupon 1개, product 1개") && routeChooser.Contains("shared-admin.md") && routeChooser.Contains("default"), "route: 3단계 안내에 후보·팀·레포 지도·공용 문서·규칙 후보");

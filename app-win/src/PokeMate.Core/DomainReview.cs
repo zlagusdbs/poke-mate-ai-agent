@@ -263,6 +263,17 @@ public static class DomainReview
         return (domain, why.Length == 0 ? "이유 없음" : why);
     }
 
+    /// 도메인을 정하지 못했을 때의 근거 (3단계 실패·판정 실패)
+    public const string Undecided = "도메인을 정하지 못해 " + Fallback + " 로 리뷰";
+
+    /// 3단계 답(실행 실패면 null)으로 정한 도메인. 후보면 `Chosen`, default 면 `Fallback`(이유가 없으면 `Undecided`), 못 읽으면 default·`Undecided`.
+    public static (string Domain, string Why, Source Source) Decide(string? answer, IReadOnlyCollection<string> candidates)
+    {
+        if (answer == null || Extract(answer, candidates) is not { } choice) return (Fallback, Undecided, Source.Fallback);
+        if (choice.Domain != Fallback) return (choice.Domain, choice.Why, Source.Chosen);
+        return (Fallback, choice.Why == "이유 없음" ? Undecided : choice.Why, Source.Fallback);
+    }
+
     public static string SessionKey(string domain) => PipelineRoleExtensions.SessionKey(domain, PipelineRole.Reviewer);
 
     /// 리뷰어 프롬프트. 세션은 PR 한 건마다 따로다(`SessionPolicy`). `firstRun` 은 새 세션인지, `handoff` 는 새 세션일 때 붙이는 "이번 건 인계" 블록.

@@ -725,9 +725,6 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
 
     // MARK: 도메인 리뷰어
 
-    /// 3단계(PR 판단)도 못 정했을 때의 근거
-    static readonly string Undecided = $"도메인을 정하지 못해 {DomainReview.Fallback} 로 리뷰";
-
     /// GitHub PR 리뷰 요청: PR 마다 도메인을 정해 그 도메인의 리뷰어 세션으로 리뷰한다. PR 이 아니면 레포별 작업 세션으로.
     /// 0. 바뀐 파일 조회(실패하면 default) → 1. 팀 KB 지도·domains.json repos → 2. 경로 규칙 → 3. PR 판단(Claude, 저장 안 함) → default.
     public void HandleReview(Alarm alarm, EventItem item, string prompt, string title, ClaudeCommand.WriteAccess access,
@@ -773,7 +770,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
                 }
                 if (route is not { } routed)
                 {
-                    EnqueueReview(target, DomainReview.Fallback, Undecided, DomainReview.Source.Fallback, context, alarm, title, access, chat, completion);
+                    EnqueueReview(target, DomainReview.Fallback, DomainReview.Undecided, DomainReview.Source.Fallback, context, alarm, title, access, chat, completion);
                     return Task.CompletedTask;
                 }
                 if (routed.Decided is { } hit)
@@ -790,9 +787,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
                 {
                     SetRunning(RoutingSlot, null);
                     // 결과는 이번 PR 에만 쓴다 (저장하지 않음)
-                    var (domain, why, source) = (DomainReview.Fallback, Undecided, DomainReview.Source.Fallback);
-                    if (response is ClaudeResponse.Success success && DomainReview.Extract(success.Text, candidates) is { } choice)
-                        (domain, why, source) = (choice.Domain, choice.Why, choice.Domain == DomainReview.Fallback ? DomainReview.Source.Fallback : DomainReview.Source.Chosen);
+                    var (domain, why, source) = DomainReview.Decide((response as ClaudeResponse.Success)?.Text, candidates);
                     EnqueueReview(target, domain, why, source, context, alarm, title, access, chat, completion);
                 }, TimeSpan.FromSeconds(600), quiet: true);
                 waiting = true;
@@ -822,7 +817,7 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         var label = $"리뷰 {target.Label}";
         RemoveQueued(domain, label);
         SetRunning(domain, label);
-        SetReviewing(domain, $"{label} · {source.Raw()}: {why}");
+        SetReviewing(domain, $"{label} · 도메인: {domain} — {source.Raw()}: {why}");
         var key = DomainReview.SessionKey(domain);
         // 세션은 PR 한 건마다 (PR 파일의 sessions). 새로 시작하면 작업 탭 칸의 앞 세션은 보관하고 이유를 남긴다.
         var (review, decision) = ReviewCase.Begin(target, domain, new SessionPolicy(AppPaths.LoadSettings()), null, DateTimeOffset.Now);
