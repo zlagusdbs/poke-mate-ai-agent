@@ -149,7 +149,7 @@ public static class SessionPolicyChecks
                    "pr-case: 승인하면 보관(archivedAt)하고 기록은 남음");
         var (reopened, _) = ReviewCase.Begin(target, "acme", new SessionPolicy(), dir, t0.AddMinutes(200));
         Check.That(!reopened.IsArchived && reopened.Status == ReviewCase.StatusKind.Open && reopened.Handoffs!.Count == 2, "pr-case: 같은 PR 에 다시 요청이 오면 다시 엶 (메모 유지)");
-        Check.That(ReviewCase.Outcome("sample-web#12 · 닫힘") == ReviewCase.StatusKind.Closed && ReviewCase.Outcome("**sample-web#12 · 승인 · 결함 없음**") == ReviewCase.StatusKind.Approved
+        Check.That(ReviewCase.Outcome("sample-web#12 · 닫힘") == ReviewCase.StatusKind.Closed && ReviewCase.Outcome("[sample-web#12](https://git.example.com/acme/sample-web/pull/12) · 승인 · 결함 없음") == ReviewCase.StatusKind.Approved && ReviewCase.Outcome("**sample-web#12 · 승인 · 결함 없음**") == ReviewCase.StatusKind.Approved
                    && ReviewCase.Outcome("sample-web#12 · 확신할 수 없음 · diff 가 너무 큼") == null && ReviewCase.Outcome("승인 이유를 적는다") == null
                    && ReviewCase.Outcome("sample-web#12 · 건너뜀 · 팀 요청") == null,
                    "pr-case: 마지막 답 첫 줄의 결과로 승인·닫힘만 보관");
