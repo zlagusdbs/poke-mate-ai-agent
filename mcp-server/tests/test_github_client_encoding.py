@@ -16,3 +16,10 @@ def test_api_decodes_gh_output_as_utf8(monkeypatch):
                         lambda cmd, **kw: real_run([sys.executable, "-c", script], **kw))
     rows = github_client.review_requests("https://github.example.invalid")
     assert [r["title"] for r in rows] == [title]
+
+
+def test_direct_env_skips_proxy_for_internal_host():
+    env = github_client.direct_env("ghe.example.invalid", {"HTTPS_PROXY": "http://10.0.0.1:8080", "no_proxy": "localhost"})
+    assert env["NO_PROXY"] == env["no_proxy"] == "localhost,ghe.example.invalid"
+    assert env["HTTPS_PROXY"] == "http://10.0.0.1:8080"
+    assert "NO_PROXY" not in github_client.direct_env("github.com", {})
