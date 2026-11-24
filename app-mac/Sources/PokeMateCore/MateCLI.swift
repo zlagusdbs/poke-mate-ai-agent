@@ -38,6 +38,25 @@ public enum MateCLI {
         return try decode([EventItem].self, out)
     }
 
+    /// PR 의 바뀐 파일 목록 (helper `gh-get … /files --paginate`). 실패하거나 시간이 넘으면 nil, 바뀐 파일이 없으면 빈 목록.
+    public static func pullFiles(_ target: ReviewTarget, settings: AppSettings) async -> [String]? {
+        let args = ["auto", "gh-get", "repos/\(target.fullName)/pulls/\(target.number)/files", "--paginate", "--jq", ".[].filename"]
+        guard let out = try? await run(args, stdin: nil, settings: settings), out.exitCode == 0 else { return nil }
+        return parseFileList(String(decoding: out.stdout, as: UTF8.self))
+    }
+
+    /// 한 줄에 파일 하나. 앞뒤 공백·빈 줄을 빼고, 순서를 지키며 중복을 없앤다 (여러 쪽이 이어 붙어도 된다).
+    /// CRLF 도 줄바꿈으로 본다 (Swift 에서 "\r\n" 은 글자 하나라 `\.isNewline` 으로 나눈다).
+    public static func parseFileList(_ stdout: String) -> [String] {
+        var seen = Set<String>()
+        var files: [String] = []
+        for line in stdout.split(whereSeparator: \.isNewline) {
+            let file = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !file.isEmpty && seen.insert(file).inserted { files.append(file) }
+        }
+        return files
+    }
+
     /// 이슈 등록. 사용자가 확인 카드에서 [Jira에 등록]을 눌렀을 때만 부른다.
     public static func jiraCreate(_ draft: JiraDraft, settings: AppSettings) async throws -> JiraCreated {
         let input = String(decoding: try JSONEncoder().encode(draft), as: UTF8.self)

@@ -479,6 +479,8 @@ extension WorkSessionCenter {
 }
 
 extension WorkSessionCenter {
+    /// GitHub PR 리뷰 요청: PR 마다 도메인을 정해 그 도메인의 리뷰어 세션으로 리뷰한다. PR 이 아니면 레포별 작업 세션으로.
+    /// 0. 바뀐 파일 조회(실패하면 default) → 1. 팀 KB 지도·domains.json repos → 2. 경로 규칙 → 3. PR 판단(Claude, 저장 안 함) → default.
     func handleReview(alarm: Alarm, item: EventItem, prompt: String, title: String, access: ClaudeCommand.WriteAccess,
                       chat: ChatSession, completion: @escaping (ClaudeResponse, RunUsage?) -> Void) {
         guard let target = ReviewTarget.parse(url: item.url) else {
@@ -486,31 +488,60 @@ extension WorkSessionCenter {
             return
         }
         let context = "\(Self.pipelineEvent(item))\n\n요청: \(prompt)"
+        running[Self.routingSlot] = target.label
+        Task { [weak self] in
+            await self?.routeReview(target, context: context, alarm: alarm, title: title, access: access, chat: chat, completion: completion)
+        }
+    }
+
+    /// 0~2단계는 메인 밖에서 한다(helper 실행·팀 KB 폴더 훑기, `fetchRoute`). 이어지는 일은 메인에서. `routingSlot` 표시는 어느 길로 가든 지운다.
+    private func routeReview(_ target: ReviewTarget, context: String, alarm: Alarm, title: String, access: ClaudeCommand.WriteAccess,
+                             chat: ChatSession, completion: @escaping (ClaudeResponse, RunUsage?) -> Void) async {
+        let settings = AppPaths.loadSettings()
         let map = DomainMap.load()
-        if let hit = DomainReview.known(target, map: map, book: ReviewDomainBook.load()) {
+        let team = TeamConfig.load()
+        let fetched = await Self.fetchRoute(target, map: map, team: team, settings: settings)
+        var waiting = false   // 3단계 실행에 넘겼으면 그 끝에서 routingSlot 을 지운다
+        defer { if !waiting { running[Self.routingSlot] = nil } }
+        guard let routed = fetched else {
+            enqueueReview(target, domain: DomainReview.fallback, why: "파일 조회 실패", source: .fallback, context: context, alarm: alarm, title: title,
+                          access: access, chat: chat, completion: completion)
+            return
+        }
+        if let hit = routed.decided {
             enqueueReview(target, domain: hit.domain, why: hit.why, source: hit.source, context: context, alarm: alarm, title: title,
                           access: access, chat: chat, completion: completion)
             return
         }
-        let helper = PipelineAccess.helper(settings: AppPaths.loadSettings())
-        let readOnly = ClaudeCommand.WriteAccess(tools: ["Bash(\(helper) gh-get:*)", "Bash(\(helper) jira-get:*)"], dirs: [])
-        running[Self.routingSlot] = target.label
-        chat.runAutomation(title: "\(title) · 도메인 정하기", prompt: DomainReview.choosePrompt(target: target, map: map, helper: helper),
+        // 3단계: 읽기 권한은 gh-get·jira-get 만. 넘긴 팀 KB 공용 문서를 읽을 수 있게 내 팀 KB 폴더를 더한다.
+        let helper = PipelineAccess.helper(settings: settings)
+        var dirs: [String] = []
+        for m in team?.mine() ?? [] {
+            let dir = DomainMap.resolvePath(m.entry.kb, home: NSHomeDirectory())
+            if !dirs.contains(dir) { dirs.append(dir) }
+        }
+        let readOnly = ClaudeCommand.WriteAccess(tools: ["Bash(\(helper) gh-get:*)", "Bash(\(helper) jira-get:*)"], dirs: dirs)
+        let cands = DomainReview.candidates(map: map, team: team)
+        chat.runAutomation(title: "\(title) · 도메인 정하기",
+                           prompt: DomainReview.choosePrompt(target: target, map: map, team: team, hints: routed.hints, helper: helper),
                            access: readOnly, timeout: 600, quiet: true) { [weak self] response, _ in
             guard let self else { return }
             self.running[Self.routingSlot] = nil
-            var domain = DomainReview.fallback
-            var why = "도메인을 정하지 못해 \(DomainReview.fallback) 로 리뷰"
-            if case .success(let text, _) = response, let choice = DomainReview.extract(from: text, map: map) {
-                domain = choice.domain
-                why = choice.why
-                var book = ReviewDomainBook.load()
-                book.repos[target.fullName] = ReviewDomainChoice(domain: choice.domain, why: choice.why, at: Date())
-                book.save()
-            }
-            self.enqueueReview(target, domain: domain, why: why, source: .chosen, context: context, alarm: alarm, title: title,
+            // 결과는 이번 PR 에만 쓴다 (저장하지 않음)
+            var answer: String?
+            if case .success(let text, _) = response { answer = text }
+            let decided = DomainReview.decide(answer, candidates: cands)
+            self.enqueueReview(target, domain: decided.domain, why: decided.why, source: decided.source, context: context, alarm: alarm, title: title,
                                access: access, chat: chat, completion: completion)
         }
+        waiting = true
+    }
+
+    /// 0~2단계 (메인 밖): 바뀐 파일 조회 → 팀 KB 지도·domains.json repos → 경로 규칙. 파일 조회에 실패하면 nil (default 로 리뷰).
+    nonisolated static func fetchRoute(_ target: ReviewTarget, map: DomainMap, team: TeamConfig?, settings: AppSettings) async
+        -> (decided: DomainReview.Decision?, hints: RouteHints)? {
+        guard let files = await MateCLI.pullFiles(target, settings: settings) else { return nil }
+        return DomainReview.route(target: target, map: map, team: team, rules: PathRules.load(), files: files)
     }
 
     private func enqueueReview(_ target: ReviewTarget, domain: String, why: String, source: DomainReview.Source, context: String,
@@ -530,7 +561,7 @@ extension WorkSessionCenter {
         if let i = queued[domain]?.firstIndex(of: label) { queued[domain]?.remove(at: i) }
         if queued[domain]?.isEmpty == true { queued[domain] = nil }
         running[domain] = label
-        reviewing[domain] = "\(label) · \(why)"
+        reviewing[domain] = "\(label) · 도메인: \(domain) — \(source.rawValue): \(why)"
         let key = DomainReview.sessionKey(domain)
         // 세션은 PR 한 건마다 (PR 파일의 sessions). 새로 시작하면 작업 탭 칸의 앞 세션은 보관하고 이유를 남긴다.
         let begun = ReviewCase.begin(target: target, domain: domain, policy: SessionPolicy(settings: AppPaths.loadSettings()), now: Date())

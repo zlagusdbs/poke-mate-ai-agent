@@ -87,7 +87,7 @@ if reviewMode {
     let how = resumeId == nil ? "새로" + (decision.reason.map { " (\($0))" } ?? " (처음)") : "이어 쓰기"
     Trial.line("리뷰 \(target.label) 세션 \(how) · \(resumeId ?? freshId ?? "-")\(handoff != nil ? " · 인계 블록 있음" : "")\(tabReason.map { " · 작업 탭 이유: \($0)" } ?? "")")
     let context = "다음 이벤트가 생겼다.\n- [리뷰 요청] \(target.label)\n- 링크: \(target.url)\n\n요청: 시험 리뷰"
-    let prompt = DomainReview.reviewPrompt(target: target, domain: reviewDomain, why: "시험 도메인", source: .explicit, firstRun: resumeId == nil,
+    let prompt = DomainReview.reviewPrompt(target: target, domain: reviewDomain, why: "시험 도메인", source: .listed, firstRun: resumeId == nil,
                                            notes: DomainNotes(root: root.appendingPathComponent("notes").path), helper: helperText, context: context, handoff: handoff)
     let runner = ClaudeRunner()
     let response = await runner.run(prompt: prompt, sessionId: resumeId, settings: settings, timeout: 1800, newSessionId: freshId)
