@@ -10,7 +10,11 @@
 - 코드 읽기: Read·Grep·Glob (`~/Workspace` 아래), `$H git-read --repo {레포폴더} -- fetch origin pull/{n}/head:refs/review/{n}` 후 `git-read --repo X -- show refs/review/{n}:{경로}`
 - Jira 조회: `$H jira-get --key {KEY}`, `$H jira-comments --key {KEY}` (읽기 전용, JSON)
 - 도메인 노트: 위 "도메인 노트" 줄의 `domain-note` 명령 (노트 파일 직접 편집은 막혀 있다)
-- 리뷰 본문 파일: `$H write-note --name {repo}-{n}-review.md --text "..."`, 줄 댓글 파일(JSON 배열): `write-note --name {repo}-{n}-comments.json --text '[{"path":"...","line":N,"side":"RIGHT","body":"..."}]'`
+- 리뷰 본문 파일: 본문을 명령줄(`--text`)에 넣지 않는다. 백틱·따옴표·줄바꿈이 든 명령은 승인을 요구해 막힌다.
+  1. `$H write-note --name {repo}-{n}-review.md --text "-"` 로 자리만 만들고 출력된 경로를 받는다.
+  2. Read 로 그 파일을 한 번 읽고, Write 도구로 같은 경로에 본문 전체를 쓴다(이 폴더에만 쓸 수 있다).
+  - 줄 댓글 파일도 같은 방식이다: 이름 `{repo}-{n}-comments.json`, 내용은 JSON 배열 `[{"path":"...","line":N,"side":"RIGHT","body":"..."}]`.
+  - Write 가 막히면(허용 목록에 notes 폴더 `Write(...)`·`Edit(...)` 가 없으면) 등록하지 말고 "blocked: 리뷰 본문 파일을 쓸 수 없음" 으로 끝낸다.
 - 리뷰 등록: `$H gh-review --repo {owner/repo} --pr {n} --event APPROVE|COMMENT --body-file {경로} [--comments-file {경로}] --commit {head sha}` (내 PR·draft·내가 직접 지정되지 않은 PR 은 거절됨, Request changes 불가)
 - 기록·Teams 알림: `$H event --notify ...` (웹훅 주소 파일은 열지 않는다)
 - 처리 결과 저장: `$H review-state --url {PR url} --sha {head sha} --result "..."` (건너뛸지 확인만 할 때는 `--check`)
