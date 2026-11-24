@@ -31,7 +31,7 @@ def gh_path() -> str:
 def is_logged_in(base_url: str) -> bool:
     try:
         result = subprocess.run([gh_path(), "auth", "status", "--hostname", host_of(base_url)],
-                                capture_output=True, text=True, timeout=20)
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     except (PokeMateError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
@@ -40,7 +40,7 @@ def is_logged_in(base_url: str) -> bool:
 def _api(base_url: str, args: list[str]):
     try:
         result = subprocess.run([gh_path(), "api", "--hostname", host_of(base_url), *args],
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except subprocess.TimeoutExpired as e:
         raise NetworkUnreachable(SYSTEM, "응답 없음") from e
     if result.returncode != 0:
