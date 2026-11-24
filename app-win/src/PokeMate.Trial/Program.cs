@@ -148,7 +148,7 @@ async Task<int> Review(string url, string reviewDomain)
     var handoff = review.HandoffBlock(decision);
     Line($"리뷰 {target.Label} 세션 {(resumeId == null ? $"새로{(decision.Reason != null ? $" ({decision.Reason})" : " (처음)")}" : "이어 쓰기")} · {resumeId ?? freshId}{(handoff != null ? " · 인계 블록 있음" : "")}{(tabReason != null ? $" · 작업 탭 이유: {tabReason}" : "")}");
     var context = $"다음 이벤트가 생겼다.\n- [리뷰 요청] {target.Label}\n- 링크: {url}\n\n요청: 시험 리뷰";
-    var prompt = DomainReview.ReviewPrompt(target, reviewDomain, "시험 도메인", DomainReview.Source.Explicit, resumeId == null,
+    var prompt = DomainReview.ReviewPrompt(target, reviewDomain, "시험 도메인", DomainReview.Source.Listed, resumeId == null,
                                            new DomainNotes(Path.Combine(root, "notes")), helperText, context, handoff);
     var runner = new ClaudeRunner();
     var response = await runner.Run(prompt, resumeId, settings, timeout: TimeSpan.FromSeconds(1800), newSessionId: freshId);

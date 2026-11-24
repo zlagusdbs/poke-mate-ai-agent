@@ -736,7 +736,9 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         }
         var context = $"{PipelineEvent(item)}\n\n요청: {prompt}";
         var map = DomainMap.Load();
-        if (DomainReview.Known(target, map, ReviewDomainBook.Load()) is { } hit)
+        var team = TeamConfig.Load();
+        var route = DomainReview.Route(target, map, team, PathRules.Load(), Array.Empty<string>());
+        if (route.Decided is { } hit)
         {
             EnqueueReview(target, hit.Domain, hit.Why, hit.Source, context, alarm, title, access, chat, completion);
             return;
@@ -744,18 +746,15 @@ public sealed class WorkSessionCenter : NotifyObject, IWorkSessionHost
         var helper = PipelineAccess.Helper(AppPaths.LoadSettings());
         var readOnly = new ClaudeCommand.WriteAccess(new[] { $"Bash({helper} gh-get:*)", $"Bash({helper} jira-get:*)" }, Array.Empty<string>());
         SetRunning(RoutingSlot, target.Label);
-        chat.RunAutomation($"{title} · 도메인 정하기", DomainReview.ChoosePrompt(target, map, helper), readOnly, (response, _) =>
+        chat.RunAutomation($"{title} · 도메인 정하기", DomainReview.ChoosePrompt(target, map, team, route.Hints, helper), readOnly, (response, _) =>
         {
             SetRunning(RoutingSlot, null);
             var domain = DomainReview.Fallback;
             var why = $"도메인을 정하지 못해 {DomainReview.Fallback} 로 리뷰";
-            if (response is ClaudeResponse.Success success && DomainReview.Extract(success.Text, map) is { } choice)
+            if (response is ClaudeResponse.Success success && DomainReview.Extract(success.Text, DomainReview.Candidates(map, team)) is { } choice)
             {
                 domain = choice.Domain;
                 why = choice.Why;
-                var book = ReviewDomainBook.Load();
-                book.Repos[target.FullName] = new ReviewDomainChoice(choice.Domain, choice.Why, DateTimeOffset.Now);
-                book.Save();
             }
             EnqueueReview(target, domain, why, DomainReview.Source.Chosen, context, alarm, title, access, chat, completion);
         }, TimeSpan.FromSeconds(600), quiet: true);

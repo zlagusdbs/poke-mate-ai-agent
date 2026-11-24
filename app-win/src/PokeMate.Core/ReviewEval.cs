@@ -74,12 +74,12 @@ public static class ReviewEval
     public static Dictionary<string, string> Environment(ReviewTarget target) =>
         new() { ["POKEMATE_EVAL"] = "1", ["POKEMATE_REVIEW_REPO"] = target.FullName };
 
-    /// 도메인: 문제에 적은 것 → domains.json·예전 기록 → default
-    public static (string Domain, string Why, DomainReview.Source Source) Domain(ReviewEvalCase item, ReviewTarget target, DomainMap map, ReviewDomainBook book)
+    /// 도메인: 문제에 적은 것 → domains.json 의 repos → default
+    public static (string Domain, string Why, DomainReview.Source Source) Domain(ReviewEvalCase item, ReviewTarget target, DomainMap map)
     {
         if (item.Domain is string fixedDomain && DomainReview.Valid(fixedDomain, map)) return (fixedDomain, "평가 문제에 정한 도메인", DomainReview.Source.Chosen);
-        if (DomainReview.Known(target, map, book) is { } hit) return hit;
-        return (DomainReview.Fallback, "평가 문제에 도메인이 없고 기록도 없음", DomainReview.Source.Chosen);
+        if (DomainReview.Listed(target, map) is { } hit) return hit;
+        return (DomainReview.Fallback, "평가 문제에 도메인이 없고 domains.json 의 repos 에도 없음", DomainReview.Source.Fallback);
     }
 
     public static string Prompt(ReviewEvalCase item, ReviewTarget target, string domain, string why, DomainReview.Source source, DomainNotes notes,
