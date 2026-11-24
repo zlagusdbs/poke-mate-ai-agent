@@ -109,11 +109,14 @@ public sealed record DomainMap
     {
         home ??= Paths.Home;
         var items = Knowledge.TryGetValue(domain, out var own) ? own : DefaultKnowledge;
-        return items.Select(item =>
-            item.StartsWith("~/", StringComparison.Ordinal) || item.StartsWith("~\\", StringComparison.Ordinal) ? Paths.ExpandTilde(item, home)
-            : item.StartsWith('/') || Paths.IsWindowsAbsolute(item) ? item
-            : Path.Combine(home, "Workspace", item.Replace('/', '\\'))).ToList();
+        return items.Select(item => ResolvePath(item, home)).ToList();
     }
+
+    /// 경로 한 개 해석. `~\`·`~/` 는 홈, 절대 경로는 그대로, 나머지는 `홈\Workspace\` 아래.
+    public static string ResolvePath(string item, string home) =>
+        item.StartsWith("~/", StringComparison.Ordinal) || item.StartsWith("~\\", StringComparison.Ordinal) ? Paths.ExpandTilde(item, home)
+        : item.StartsWith('/') || Paths.IsWindowsAbsolute(item) ? item
+        : Path.Combine(home, "Workspace", item.Replace('/', '\\'));
 
     /// 프롬프트에 넣는 지식 저장소 목록. 홈 아래는 `~/…`, 나머지는 `/` 구분으로 보여 준다 (Git Bash·Claude 가 그대로 읽는다).
     public string KnowledgeText(string domain, string? home = null)
