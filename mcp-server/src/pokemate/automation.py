@@ -893,7 +893,8 @@ def cmd_deploy_approve(args):
 
 
 def gh_env():
-    return {**os.environ, "GH_HOST": gh_host()}
+    from .github_client import direct_env
+    return {**direct_env(gh_host()), "GH_HOST": gh_host()}
 
 
 def cmd_gh_get(args):

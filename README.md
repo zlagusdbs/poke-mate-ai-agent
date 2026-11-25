@@ -154,6 +154,7 @@ GitHub 리뷰 자동 처리 알람(트리거 "리뷰어로 지정됐을 때" + �
    - 원본·대상 저장소는 데이터 폴더 `automation/kb-sync/` 에 따로 clone 해 둔다(원본은 blobless). 사람이 쓰는 체크아웃은 건드리지 않는다. git 인증은 `gh auth git-credential` 이라 `gh auth login` 이 두 호스트 모두 되어 있어야 한다.
    - `--dry-run` 은 커밋·push·PR 없이 바뀔 파일과 PR 본문만 출력한다. 리뷰 기준 문제 평가(`POKEMATE_EVAL=1`)에서는 막힌다.
    - 허용 목록(`write-tools.json`)에 `Bash({helper} kb-sync:*)` 가 있어야 한다.
+8. **리뷰 본문은 Write 도구로 쓴다**: 본문(백틱·따옴표·줄바꿈이 든 마크다운)을 `write-note --text` 명령줄에 넣으면 Claude Code 가 승인을 요구해 막힌다. 그래서 `write-note --text "-"` 로 자리를 만들고 출력된 경로에 Write 도구로 쓴다. 허용 목록에 데이터 폴더 notes 를 가리키는 `Write(//c/Users/{나}/AppData/Local/poke-mate/automation/notes/**)` 와 `Edit(…같은 경로…)` 둘 다, 그리고 `dirs` 에 같은 폴더가 있어야 한다. `Write(...)` 는 앱이 Write 도구를 켜는 표시이고, 실제 쓰기 허용은 `Edit(...)` 규칙이 한다(Write 규칙만으로는 승인을 요구해 막힌다).
 
 ### 리뷰 기준 문제 묶음 (수준 확인)
 

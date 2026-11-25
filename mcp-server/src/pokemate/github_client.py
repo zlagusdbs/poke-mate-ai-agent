@@ -17,6 +17,18 @@ def host_of(base_url: str) -> str:
     return urlparse(base_url).hostname or base_url
 
 
+def direct_env(host: str, base: dict | None = None) -> dict:
+    """사내 GitHub 은 프록시를 거치지 않게 NO_PROXY 에 호스트를 더한 환경. 프록시가 걸린 실행에서 연결이 끊기는 것을 막는다."""
+    env = dict(os.environ if base is None else base)
+    if host and host != "github.com":
+        current = env.get("NO_PROXY") or env.get("no_proxy") or ""
+        hosts = [h.strip() for h in current.split(",") if h.strip()]
+        if host not in hosts:
+            hosts.append(host)
+        env["NO_PROXY"] = env["no_proxy"] = ",".join(hosts)
+    return env
+
+
 def gh_path() -> str:
     if sys.platform == "win32":
         fallback = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "GitHub CLI", "gh.exe")
@@ -31,7 +43,8 @@ def gh_path() -> str:
 def is_logged_in(base_url: str) -> bool:
     try:
         result = subprocess.run([gh_path(), "auth", "status", "--hostname", host_of(base_url)],
-                                capture_output=True, text=True, timeout=20)
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+                                env=direct_env(host_of(base_url)))
     except (PokeMateError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
@@ -40,7 +53,8 @@ def is_logged_in(base_url: str) -> bool:
 def _api(base_url: str, args: list[str]):
     try:
         result = subprocess.run([gh_path(), "api", "--hostname", host_of(base_url), *args],
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                                env=direct_env(host_of(base_url)))
     except subprocess.TimeoutExpired as e:
         raise NetworkUnreachable(SYSTEM, "응답 없음") from e
     if result.returncode != 0:
