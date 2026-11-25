@@ -332,7 +332,7 @@ public sealed class WorkSessionsView : UserControl
     }
 
     /// 누르는 모양이 없는 평평한 버튼 틀 (한 줄 전체가 눌리는 칸)
-    static ControlTemplate FlatTemplate()
+    internal static ControlTemplate FlatTemplate()
     {
         var border = new FrameworkElementFactory(typeof(Border));
         border.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
@@ -532,7 +532,8 @@ public sealed class WorkSessionDetail : Grid
         entriesPanel.Children.Clear();
         if (entries.Count == 0)
             entriesPanel.Children.Add(Ui.Text(session?.Id.Length == 0 ? "아직 대화가 없어요. 첫 메시지를 보내면 레포 지식부터 모아요." : "기록 파일을 찾지 못했어요.", 11, "TextSecondary", wrap: true));
-        foreach (var e in entries) entriesPanel.Children.Add(EntryView(e));
+        var groups = TranscriptGroups.Split(entries);
+        for (var i = 0; i < groups.Count; i++) entriesPanel.Children.Add(GroupView(groups[i], i == groups.Count - 1));
 
         busyHost.Children.Clear();
         if (chat.IsBusy && chat.Messages.LastOrDefault(m => m.Role == ChatMessage.RoleKind.User) is { } last)
@@ -571,6 +572,56 @@ public sealed class WorkSessionDetail : Grid
         RefreshSend();
     }
 
+    /// 사용자가 직접 펼치거나 접은 작업 건 (기본은 마지막 건만 펼침)
+    readonly HashSet<string> opened = new();
+    readonly HashSet<string> closed = new();
+
+    /// 작업 건 하나: 위 구분선, 누르면 접고 펴는 머리줄(▸/▾ · 제목 · 시각), 펼치면 줄들
+    UIElement GroupView(TranscriptGroup group, bool latest)
+    {
+        var expanded = latest ? !closed.Contains(group.Key) : opened.Contains(group.Key);
+        var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+        var line = new Border { Height = 1, Margin = new Thickness(0, 0, 0, 6) };
+        line.SetResourceReference(Border.BackgroundProperty, "Line");
+        panel.Children.Add(line);
+
+        var head = new DockPanel();
+        var time = Ui.Text(group.Time, 10, "TextSecondary");
+        time.VerticalAlignment = VerticalAlignment.Center;
+        time.Margin = new Thickness(8, 0, 0, 0);
+        DockPanel.SetDock(time, Dock.Right);
+        head.Children.Add(time);
+        var arrow = Ui.Text(expanded ? "▾" : "▸", 11, "TextSecondary");
+        arrow.Width = 14;
+        arrow.VerticalAlignment = VerticalAlignment.Center;
+        head.Children.Add(arrow);
+        var title = Ui.Text(group.Title, 12, "TextFg", FontWeights.SemiBold);
+        title.VerticalAlignment = VerticalAlignment.Center;
+        title.ToolTip = group.Title;
+        head.Children.Add(title);
+        var button = new Button
+        {
+            Content = head, Template = WorkSessionsView.FlatTemplate(), Padding = new Thickness(4, 4, 4, 4),
+            Background = Brushes.Transparent, Cursor = Cursors.Hand, HorizontalContentAlignment = HorizontalAlignment.Stretch, FocusVisualStyle = null,
+            ToolTip = expanded ? "눌러서 접기" : "눌러서 펼치기",
+        };
+        button.Click += (_, _) =>
+        {
+            var set = latest ? closed : opened;
+            if (!set.Remove(group.Key)) set.Add(group.Key);
+            Redraw();
+        };
+        panel.Children.Add(button);
+
+        if (expanded)
+        {
+            var body = new StackPanel { Margin = new Thickness(18, 6, 0, 0) };
+            foreach (var e in group.Entries) body.Children.Add(EntryView(e));
+            panel.Children.Add(body);
+        }
+        return panel;
+    }
+
     UIElement EntryView(TranscriptEntry e)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
@@ -589,7 +640,7 @@ public sealed class WorkSessionDetail : Grid
         else
         {
             var mono = e.Kind is TranscriptEntry.EntryKind.Tool or TranscriptEntry.EntryKind.Result;
-            var text = Ui.Text(e.Text, mono ? 11 : 13, e.Kind == TranscriptEntry.EntryKind.Result ? "TextSecondary" : "TextFg", wrap: true);
+            var text = Ui.Text(e.Text, mono ? 11 : 13, mono ? "TextSecondary" : "TextFg", wrap: true);
             text.TextTrimming = TextTrimming.None;
             if (mono) text.FontFamily = new FontFamily("Cascadia Mono, Consolas, Malgun Gothic");
             panel.Children.Add(text);

@@ -408,6 +408,57 @@ public enum SessionTranscript {
     }
 }
 
+/// 작업 탭 기록의 작업 건 하나: 보낸 말 하나와 그 뒤 답·도구 줄. 제목은 마지막 답의 첫 줄(없으면 보낸 말 첫 줄).
+public struct TranscriptGroup: Equatable, Identifiable, Sendable {
+    public let key: String
+    public let title: String
+    public let time: String
+    public let entries: [TranscriptEntry]
+    public var id: String { key }
+}
+
+public enum TranscriptGroups {
+    /// 보낸 말(user)마다 새 건을 연다. 첫 보낸 말 앞의 줄(기록 앞부분이 잘린 경우)은 따로 한 건.
+    public static func split(_ entries: [TranscriptEntry]) -> [TranscriptGroup] {
+        var groups: [TranscriptGroup] = []
+        var current: [TranscriptEntry] = []
+        func close() {
+            guard let first = current.first else { return }
+            let answer = current.last(where: { $0.kind == .assistant })
+            var title = firstLine(answer?.text ?? "")
+            if title.isEmpty { title = firstLine(first.kind == .user ? first.text : "") }
+            if title.isEmpty { title = "이전 기록" }
+            groups.append(TranscriptGroup(key: first.time + "|" + String(first.text.prefix(40)), title: title, time: shortTime(first.time), entries: current))
+            current = []
+        }
+        for e in entries {
+            if e.kind == .user { close() }
+            current.append(e)
+        }
+        close()
+        return groups
+    }
+
+    /// 첫 줄: 마크다운 링크는 글자만, `**`·앞의 `#`·`-` 는 뺀다. 80자까지.
+    public static func firstLine(_ text: String) -> String {
+        let link = try! NSRegularExpression(pattern: #"\[([^\]]*)\]\([^)]*\)"#)
+        for raw in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
+            var line = link.stringByReplacingMatches(in: raw, range: NSRange(raw.startIndex..., in: raw), withTemplate: "$1")
+            line = line.replacingOccurrences(of: "**", with: "")
+            line = String(line.drop(while: { "#-* \t".contains($0) })).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty { return line.count > 80 ? String(line.prefix(80)) + "…" : line }
+        }
+        return ""
+    }
+
+    /// `2026-11-25 15:10:03` → `11-25 15:10`. 형식이 다르면 그대로.
+    public static func shortTime(_ time: String) -> String {
+        let c = Array(time)
+        guard c.count >= 16, c[4] == "-", c[10] == " " else { return time }
+        return String(c[5..<16])
+    }
+}
+
 public enum TranscriptUsage {
     public static func total(_ data: Data, since: Date? = nil) -> (usage: RunUsage, lastContext: Int) {
         let iso = ISO8601DateFormatter()
