@@ -101,6 +101,22 @@ public static class WorkSessionChecks
         Check.That(crlf.Count == 4 && crlf[1].Text == "계획" && crlf[2].Text == "Bash 실행 중: ls", "session: CRLF 줄 끝의 대화 기록도 읽음");
         var errorRow = SessionTranscript.Parse("""{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"실패"}],"is_error":true}]}}""");
         Check.That(errorRow.Count == 1 && errorRow[0].Kind == TranscriptEntry.EntryKind.Result && errorRow[0].Text == "오류: 실패", "session: 도구 오류 결과는 '오류: ' 를 붙임");
+        TranscriptEntry Row(int id, TranscriptEntry.EntryKind kind, string text) => new(id, kind, "2026-11-25 15:1" + id + ":00", text);
+        var groups = TranscriptGroups.Split(new[]
+        {
+            Row(0, TranscriptEntry.EntryKind.Result, "잘린 앞부분"),
+            Row(1, TranscriptEntry.EntryKind.User, "이번 건: r#1\n리뷰해"),
+            Row(2, TranscriptEntry.EntryKind.Assistant, "확인할게요"),
+            Row(3, TranscriptEntry.EntryKind.Tool, "Bash 실행 중: ls"),
+            Row(4, TranscriptEntry.EntryKind.Assistant, "\n**[r#1](https://x/pull/1) · 댓글** · 결함 0건\n결함: 없음"),
+            Row(5, TranscriptEntry.EntryKind.User, "## 두 번째 건\n본문"),
+        });
+        Check.That(groups.Count == 3
+                   && groups[0].Title == "이전 기록" && groups[0].Entries.Count == 1
+                   && groups[1].Title == "r#1 · 댓글 · 결함 0건" && groups[1].Entries.Count == 4 && groups[1].Time == "11-25 15:11"
+                   && groups[2].Title == "두 번째 건" && groups[1].Key != groups[2].Key
+                   && TranscriptGroups.Split(Array.Empty<TranscriptEntry>()).Count == 0,
+                   "session: 기록을 보낸 말마다 작업 건으로 묶고 제목은 마지막 답 첫 줄 (링크는 글자만)");
         var long1300 = SessionTranscript.Parse("{\"type\":\"user\",\"message\":{\"content\":\"" + new string('가', 1300) + "\"}}");
         Check.That(long1300.Count == 1 && new System.Globalization.StringInfo(long1300[0].Text).LengthInTextElements == 1201 && long1300[0].Text.EndsWith("…"), "session: 긴 글은 1200자 + …");
 

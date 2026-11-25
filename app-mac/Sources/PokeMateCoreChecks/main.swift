@@ -516,6 +516,23 @@ do {
     let entries = SessionTranscript.parse(Data(jsonl.utf8))
     check(entries.map(\.kind) == [.user, .assistant, .tool, .result] && entries[2].text == "Bash 실행 중: ls" && entries[0].time == "2026-11-17 08:07:24",
           "session: 대화 기록을 사용자·답·도구·결과 줄로")
+    func row(_ id: Int, _ kind: TranscriptEntry.Kind, _ text: String) -> TranscriptEntry {
+        TranscriptEntry(id: id, kind: kind, time: "2026-11-25 15:1\(id):00", text: text)
+    }
+    let groups = TranscriptGroups.split([
+        row(0, .result, "잘린 앞부분"),
+        row(1, .user, "이번 건: r#1\n리뷰해"),
+        row(2, .assistant, "확인할게요"),
+        row(3, .tool, "Bash 실행 중: ls"),
+        row(4, .assistant, "\n**[r#1](https://x/pull/1) · 댓글** · 결함 0건\n결함: 없음"),
+        row(5, .user, "## 두 번째 건\n본문"),
+    ])
+    let groupCount = groups.count == 3
+    let groupFirst = groupCount && groups[0].title == "이전 기록" && groups[0].entries.count == 1
+    let groupSecond = groupCount && groups[1].title == "r#1 · 댓글 · 결함 0건" && groups[1].entries.count == 4 && groups[1].time == "11-25 15:11"
+    let groupThird = groupCount && groups[2].title == "두 번째 건" && groups[1].key != groups[2].key
+    check(groupFirst && groupSecond && groupThird && TranscriptGroups.split([]).isEmpty,
+          "session: 기록을 보낸 말마다 작업 건으로 묶고 제목은 마지막 답 첫 줄 (링크는 글자만)")
     let usageLines = [
         #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}}"#,
         #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}}"#,

@@ -439,6 +439,53 @@ public static class SessionTranscript
     }
 }
 
+/// 작업 탭 기록의 작업 건 하나: 보낸 말 하나와 그 뒤 답·도구 줄. 제목은 마지막 답의 첫 줄(없으면 보낸 말 첫 줄).
+public sealed record TranscriptGroup(string Key, string Title, string Time, IReadOnlyList<TranscriptEntry> Entries);
+
+public static class TranscriptGroups
+{
+    static readonly Regex Link = new(@"\[([^\]]*)\]\([^)]*\)", RegexOptions.Compiled);
+
+    /// 보낸 말(User)마다 새 건을 연다. 첫 보낸 말 앞의 줄(기록 앞부분이 잘린 경우)은 따로 한 건.
+    public static List<TranscriptGroup> Split(IReadOnlyList<TranscriptEntry> entries)
+    {
+        var groups = new List<TranscriptGroup>();
+        var current = new List<TranscriptEntry>();
+        void Close()
+        {
+            if (current.Count == 0) return;
+            var first = current[0];
+            var answer = current.LastOrDefault(e => e.Kind == TranscriptEntry.EntryKind.Assistant);
+            var title = FirstLine(answer?.Text ?? "") is { Length: > 0 } a ? a : FirstLine(first.Kind == TranscriptEntry.EntryKind.User ? first.Text : "");
+            if (title.Length == 0) title = "이전 기록";
+            groups.Add(new TranscriptGroup(first.Time + "|" + SwiftText.Prefix(first.Text, 40), title, ShortTime(first.Time), current));
+            current = new List<TranscriptEntry>();
+        }
+        foreach (var e in entries)
+        {
+            if (e.Kind == TranscriptEntry.EntryKind.User) Close();
+            current.Add(e);
+        }
+        Close();
+        return groups;
+    }
+
+    /// 첫 줄: 마크다운 링크는 글자만, `**`·앞의 `#`·`-` 는 뺀다. 80자까지.
+    public static string FirstLine(string text)
+    {
+        foreach (var raw in SwiftText.Lf(text).Split('\n'))
+        {
+            var line = Link.Replace(raw, "$1").Replace("**", "");
+            line = SwiftText.Trim(line.TrimStart('#', '-', '*', ' ', '\t'));
+            if (line.Length > 0) return SwiftText.Count(line) > 80 ? SwiftText.Prefix(line, 80) + "…" : line;
+        }
+        return "";
+    }
+
+    /// `2026-11-25 15:10:03` → `11-25 15:10`. 형식이 다르면 그대로.
+    public static string ShortTime(string time) => time.Length >= 16 && time[4] == '-' && time[10] == ' ' ? time.Substring(5, 11) : time;
+}
+
 public static class TranscriptUsage
 {
     static readonly Regex HasZone = new(@"(Z|[+-]\d{2}:?\d{2})$", RegexOptions.Compiled);
