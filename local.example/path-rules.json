@@ -1,0 +1,7 @@
+{
+  "example-org/shared-admin": [
+    { "path": "src/Areas/Coupon/**", "domain": "coupon" },
+    { "path": "src/Areas/Discount/**", "domain": "discount" },
+    { "path": "src/Areas/Item/**", "domain": "product" }
+  ]
+}

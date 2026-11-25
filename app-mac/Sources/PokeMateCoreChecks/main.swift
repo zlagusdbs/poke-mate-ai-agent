@@ -516,6 +516,23 @@ do {
     let entries = SessionTranscript.parse(Data(jsonl.utf8))
     check(entries.map(\.kind) == [.user, .assistant, .tool, .result] && entries[2].text == "Bash 실행 중: ls" && entries[0].time == "2026-11-17 08:07:24",
           "session: 대화 기록을 사용자·답·도구·결과 줄로")
+    func row(_ id: Int, _ kind: TranscriptEntry.Kind, _ text: String) -> TranscriptEntry {
+        TranscriptEntry(id: id, kind: kind, time: "2026-11-25 15:1\(id):00", text: text)
+    }
+    let groups = TranscriptGroups.split([
+        row(0, .result, "잘린 앞부분"),
+        row(1, .user, "이번 건: r#1\n리뷰해"),
+        row(2, .assistant, "확인할게요"),
+        row(3, .tool, "Bash 실행 중: ls"),
+        row(4, .assistant, "\n**[r#1](https://x/pull/1) · 댓글** · 결함 0건\n결함: 없음"),
+        row(5, .user, "## 두 번째 건\n본문"),
+    ])
+    let groupCount = groups.count == 3
+    let groupFirst = groupCount && groups[0].title == "이전 기록" && groups[0].entries.count == 1
+    let groupSecond = groupCount && groups[1].title == "r#1 · 댓글 · 결함 0건" && groups[1].entries.count == 4 && groups[1].time == "11-25 15:11"
+    let groupThird = groupCount && groups[2].title == "두 번째 건" && groups[1].key != groups[2].key
+    check(groupFirst && groupSecond && groupThird && TranscriptGroups.split([]).isEmpty,
+          "session: 기록을 보낸 말마다 작업 건으로 묶고 제목은 마지막 답 첫 줄 (링크는 글자만)")
     let usageLines = [
         #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}}"#,
         #"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}}"#,
@@ -1546,6 +1563,51 @@ do {
     check(split?.model == "opus" && split?.automationModel == "sonnet" && split?.automationEffort == "low", "model: 대화·자동 처리 모델은 따로 저장")
 }
 
+// MARK: 팀 설정 (local/teams.json 읽기·내 팀 도메인 후보)
+do {
+    let map = DomainMap.parse(Data(#"{"coupon":{"repos":[]},"discount":{"repos":[]},"product":{"repos":["sample-item-api"]}}"#.utf8))
+    let cfg = TeamConfig.parse(Data(#"{"myTeams":["pricing","product","gone"],"repoGuide":" example-org/repo-guide ","teams":{"pricing":{"kb":"kb/pricing-kb","repoMap":"raw/{domain}/repos/{repo}.md","domains":["coupon","discount","missing"]},"product":{"kb":"kb/product-kb","repoMap":null,"domains":["product"]},"empty":{"kb":"","domains":["x"]}}}"#.utf8))
+    if let cfg {
+        let names = cfg.mine().map { $0.team }
+        check(cfg.repoGuide == "example-org/repo-guide" && names == ["pricing", "product"] && cfg.teams["empty"] == nil, "team: 내 팀들 (없는 팀·kb 빈 팀은 뺌)")
+        check(cfg.candidates(map: map) == ["coupon", "discount", "product"], "team: 후보는 내 팀 도메인 합집합, domains.json 에 없는 도메인은 뺌")
+        check(cfg.teamOf("product") == "product" && cfg.teamOf("missing") == "pricing" && cfg.teamOf("zzz") == nil, "team: 도메인의 팀")
+    } else {
+        check(false, "team: 내 팀들 (없는 팀·kb 빈 팀은 뺌)")
+    }
+    check(TeamConfig.parse(Data("[1]".utf8)) == nil && TeamConfig.parse(Data("{".utf8)) == nil, "team: 깨진 파일은 없는 것으로")
+    let none = TeamConfig.parse(Data(#"{"myTeams":["gone"],"teams":{}}"#.utf8))
+    check(none?.candidates(map: map) == ["coupon", "discount", "product"], "team: 쓸 팀이 없으면 domains.json 전체")
+    let repoMaps = TeamConfig.parse(Data(#"{"teams":{"a":{"kb":"k","repoMap":"raw/{repo}.md"},"b":{"kb":"k","repoMap":"raw/{domain}/x.md"},"c":{"kb":"k","repoMap":"raw/repos/{repo}-{domain}.md"},"d":{"kb":"k","repoMap":"raw\\{domain}\\{repo}.md"},"e":{"kb":"k","repoMap":"./raw/{domain}-team/{repo}.md"}}}"#.utf8))
+    let mapA = repoMaps?.teams["a"]?.repoMap
+    let mapB = repoMaps?.teams["b"]?.repoMap
+    let mapC = repoMaps?.teams["c"]?.repoMap
+    let mapD = repoMaps?.teams["d"]?.repoMap
+    let mapE = repoMaps?.teams["e"]?.repoMap
+    let repoMapsOk = repoMaps != nil && mapA == nil && mapB == nil && mapC == nil
+    let repoMapsKept = mapD == #"raw\{domain}\{repo}.md"# && mapE == "./raw/{domain}-team/{repo}.md"
+    check(repoMapsOk && repoMapsKept, "team: repoMap 은 {domain}·{repo} 가 다 있고 {domain} 이 마지막 경로 조각에 없어야 함 (아니면 null)")
+    check(DomainMap.resolvePath("kb/x", home: "/h") == "/h/Workspace/kb/x" && DomainMap.resolvePath("~/a", home: "/h") == "/h/a"
+          && DomainMap.resolvePath("/k", home: "/h") == "/k", "team: kb 경로 해석은 knowledge 와 같음")
+}
+
+// MARK: 경로 규칙 (local/path-rules.json 읽기·glob·도메인 판정)
+do {
+    check(PathRules.matches("src/Areas/Coupon/**", "src/areas/coupon/a/b.cs") && PathRules.matches("src/**/x.cs", "src/x.cs")
+          && PathRules.matches("src/*.cs", #".\src\a.cs"#) && !PathRules.matches("src/*.cs", "src/a/b.cs") && !PathRules.matches("src/Coupon/**", "src/CouponX/a.cs"),
+          "path-rule: glob (**, *, 대소문자, \\·./ 정리)")
+    let rules = PathRules.parse(Data(#"{"Example-Org/Shared-Admin":[{"path":"src/Areas/Coupon/**","domain":"coupon"},{"path":"src/Areas/Item/**","domain":"product"},{"path":"src/Areas/**","domain":"old"}]}"#.utf8))
+    let cands = ["coupon", "discount", "product"]
+    let one = rules.judge(fullName: "example-org/shared-admin", files: ["src/Areas/Coupon/A.cs", "src/Areas/Coupon/B.cs", "README.md"], candidates: cands)
+    check(one.domain == "coupon" && one.counts["coupon"] == 2, "path-rule: 한 도메인이면 확정 (규칙 밖 파일 섞여도)")
+    let two = rules.judge(fullName: "example-org/shared-admin", files: ["src/Areas/Coupon/A.cs", "src/Areas/Item/B.cs", "src/Areas/Item/C.cs"], candidates: cands)
+    check(two.domain == nil && two.counts["coupon"] == 1 && two.counts["product"] == 2, "path-rule: 둘 이상이면 미정 + 개수")
+    let gone = rules.judge(fullName: "example-org/shared-admin", files: ["src/Areas/Other/A.cs"], candidates: cands)
+    check(gone.domain == nil && gone.counts.isEmpty, "path-rule: 후보가 아닌 도메인 규칙은 무시")
+    check(rules.judge(fullName: "acme/other", files: ["src/Areas/Coupon/A.cs"], candidates: cands).domain == nil && PathRules.parse(Data("x".utf8)).repos.isEmpty,
+          "path-rule: 규칙 없는 레포·깨진 파일")
+}
+
 // MARK: 도메인 리뷰어
 do {
     let target = ReviewTarget.parse(url: "https://git.example.com/acme/sample-web/pull/280")
@@ -1553,28 +1615,32 @@ do {
           && ReviewTarget.parse(url: "https://git.example.com/acme/sample-web/issues/3") == nil, "review: PR 주소 읽기")
     let map = DomainMap.parse(Data(#"{"acme": {"repos": ["acme-sample-service"], "description": "쿠폰·할인", "keywords": ["쿠폰", "coupon"], "knowledge": ["acme-kb"]}, "beta": {"repos": ["beta-api"]}, "default": {"knowledge": ["sample-notes"]}}"#.utf8))
     check(map.descriptions["acme"] == "쿠폰·할인" && map.keywords["acme"] == ["쿠폰", "coupon"] && map.keywords["beta"] == nil, "review: 도메인 설명·키워드 읽기")
-    let inRepo = ReviewTarget(owner: "acme", repo: "acme-sample-service", number: 1, url: "u")
-    let explicit = DomainReview.known(inRepo, map: map, book: ReviewDomainBook(repos: ["acme/acme-sample-service": ReviewDomainChoice(domain: "beta", why: "x", at: Date())]))
-    check(explicit?.domain == "acme" && explicit?.source == .explicit, "review: domains.json repos 가 예전 기록보다 이김")
+    let inRepo = ReviewTarget(owner: "acme", repo: "ACME-Sample-Service", number: 1, url: "u")
+    let listed = DomainReview.listed(inRepo, map: map)
+    check(listed?.domain == "acme" && listed?.source == DomainReview.Source.listed && listed?.why == "domains.json 의 acme repos 에 ACME-Sample-Service 가 있음",
+          "review: domains.json repos (대소문자 무시)")
     let other = ReviewTarget(owner: "acme", repo: "sample-web", number: 2, url: "u")
-    var book = ReviewDomainBook()
-    check(DomainReview.known(other, map: map, book: book) == nil, "review: 처음 보는 레포는 도메인 정하기로")
-    book.repos[other.fullName] = ReviewDomainChoice(domain: "acme", why: "쿠폰함 화면", at: Date())
-    check(DomainReview.known(other, map: map, book: book)?.source == .learned
-          && DomainReview.known(other, map: map, book: ReviewDomainBook(repos: [other.fullName: ReviewDomainChoice(domain: "gone", why: "", at: Date())])) == nil,
-          "review: 정해 둔 기록을 쓰고, 없어진 도메인 기록은 무시")
-    let chooser = DomainReview.choosePrompt(target: other, map: map, helper: "H")
-    check(chooser.contains("- acme · 쿠폰·할인 · 키워드: 쿠폰, coupon · 레포: acme-sample-service") && chooser.contains("- default ·")
-          && chooser.contains("H gh-get repos/acme/sample-web/pulls/2/files"), "review: 도메인 정하기 안내에 목록·설명·키워드")
-    check(DomainReview.extract(from: "답\n```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"쿠폰함\"}\n```", map: map)! == ("acme", "쿠폰함")
-          && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"nope\"}\n```", map: map) == nil
-          && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"default\"}\n```", map: map)?.domain == "default",
+    check(DomainReview.listed(other, map: map) == nil, "review: repos 에 없는 레포는 null")
+    check(DomainReview.candidates(map: map, team: nil) == ["acme", "beta"], "review: 팀 설정이 없으면 domains.json 전체가 후보 (이름순, default 제외)")
+    let chooser = DomainReview.choosePrompt(target: other, map: map, team: nil, hints: RouteHints(), helper: "H")
+    check(chooser.contains("- acme · 쿠폰·할인 · 키워드: 쿠폰, coupon") && chooser.contains("- default ·") && !chooser.contains("(acme 팀)")
+          && chooser.contains("H gh-get repos/acme/sample-web/pulls/2/files") && !chooser.contains("gh-get repos/example-org/repo-guide")
+          && chooser.contains("레포 이름만으로 고르지 말고") && chooser.contains("```pokemate-domain"), "review: 도메인 정하기 안내에 목록·설명·키워드 (팀 없음, 파일 목록 없으면 조회 명령)")
+    let allCands = DomainReview.candidates(map: map, team: nil)
+    let chosen = DomainReview.extract(from: "답\n```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"쿠폰함\"}\n```", candidates: allCands)
+    check(chosen?.domain == "acme" && chosen?.why == "쿠폰함"
+          && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"nope\"}\n```", candidates: allCands) == nil
+          && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"default\"}\n```", candidates: allCands)?.domain == "default"
+          && DomainReview.extract(from: "```pokemate-domain\r\n{\"domain\": \"acme\"}\r\n```", candidates: allCands)?.why == "이유 없음",
           "review: 도메인 블록 읽기 (없는 도메인은 거절, default 는 됨)")
+    let spacedWhy = DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"  쿠폰\\n\\n함  \\t 화면\\r\\n끝 \"}\n```", candidates: allCands)
+    let blankWhy = DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"acme\", \"why\": \" \\n \"}\n```", candidates: allCands)
+    check(spacedWhy?.why == "쿠폰 함 화면 끝" && blankWhy?.why == "이유 없음", "review: 도메인 블록의 why 는 줄바꿈·탭 포함 공백 묶음을 빈칸 하나로 (비면 이유 없음)")
     let present: [String: Int] = ["/n/acme/checklist.md": 20, "/n/acme/notes.md": 12]
     let notes = DomainNotes(root: "/n", lines: { present[$0] })
     let empty = DomainNotes(root: "/n", lines: { _ in nil })
     let first = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, notes: empty, helper: "H", context: "본문")
-    let again = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .learned, firstRun: false, notes: notes, helper: "H", context: "본문")
+    let again = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .listed, firstRun: false, notes: notes, helper: "H", context: "본문")
     let unsure = DomainReview.reviewPrompt(target: other, domain: "default", why: "못 정함", source: .chosen, firstRun: true, notes: notes, helper: "H", context: "본문")
     let handedReview = DomainReview.reviewPrompt(target: other, domain: "acme", why: "쿠폰함", source: .chosen, firstRun: true, notes: notes, helper: "H", context: "본문",
                                                  handoff: "## 이번 건 인계\n- 리뷰어: 앞 리뷰")
@@ -1594,6 +1660,133 @@ do {
           && !notes.promptLines(domain: "acme", helper: "H", source: "ACME-1", canWrite: false).contains("domain-note")
           && notes.promptLines(domain: "acme", helper: "H", source: "ACME-1", canWrite: false).contains("읽기만"),
           "review: 리뷰어 세션 안내 (새 세션·이어 쓰기·공유 노트·init·gh-file·domain-note·default)")
+    check(first.contains("도메인 acme (PR 판단: 쿠폰함)") && again.contains("도메인 acme (domains.json 의 repos: 쿠폰함)")
+          && first.contains("로컬 레포 폴더(~/Workspace/sample-web)"), "review: 도메인을 정한 근거를 안내에 적음")
+    check(DomainReview.Source.teamMap.rawValue == "팀 KB 지도" && DomainReview.Source.listed.rawValue == "domains.json 의 repos"
+          && DomainReview.Source.pathRule.rawValue == "경로 규칙" && DomainReview.Source.chosen.rawValue == "PR 판단"
+          && DomainReview.Source.fallback.rawValue == "기본값", "route: 단계 이름")
+
+    // 도메인 정하기 1·2단계: 임시 홈 아래 팀 KB (`{홈}/Workspace/kb/pricing-kb`)
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("pm-route-\(UUID().uuidString)")
+    let home = tmp.path
+    let kbRaw = tmp.appendingPathComponent("Workspace/kb/pricing-kb/raw")
+    func doc(_ relative: String) {
+        let file = kbRaw.appendingPathComponent(relative)
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data("# 레포".utf8).write(to: file)
+    }
+    doc("coupon/repos/Sample.Web.md")
+    doc("common/repos/shared-admin.md")
+    let team = TeamConfig(myTeams: ["pricing", "product"], repoGuide: nil, teams: [
+        "pricing": TeamEntry(kb: "kb/pricing-kb", repoMap: "raw/{domain}/repos/{repo}.md", domains: ["coupon", "discount"]),
+        "product": TeamEntry(kb: "kb/product-kb", repoMap: nil, domains: ["product"]),
+    ])
+    let rmap = DomainMap.parse(Data(#"{"coupon": {"description": "쿠폰", "keywords": ["coupon"]}, "discount": {}, "product": {"repos": ["sample-item-api"], "description": "상품"}}"#.utf8))
+    let rules = PathRules.parse(Data(#"{"example-org/shared-admin": [{"path": "src/Areas/Coupon/**", "domain": "coupon"}, {"path": "src/Areas/Discount/**", "domain": "discount"}, {"path": "src/Areas/Item/**", "domain": "product"}]}"#.utf8))
+    let noRules = PathRules.parse(Data("{}".utf8))
+    let hit = DomainReview.route(target: ReviewTarget(owner: "acme", repo: "sample.web", number: 1, url: "u"), map: rmap, team: team, rules: noRules, files: ["a.cs"], home: home)
+    check(hit.decided?.domain == "coupon" && hit.decided?.source == DomainReview.Source.teamMap && hit.decided?.why.contains("raw/coupon/repos") == true,
+          "route: 팀 KB 지도 (대소문자 무시)")
+    check(hit.decided?.why == "pricing 팀 KB raw/coupon/repos/Sample.Web.md", "route: 팀 KB 지도 근거는 팀 KB 안의 상대 경로")
+    let itemApi = DomainReview.route(target: ReviewTarget(owner: "acme", repo: "sample-item-api", number: 2, url: "u"), map: rmap, team: team, rules: noRules,
+                                     files: ["a.cs"], home: home)
+    check(itemApi.decided?.source == DomainReview.Source.listed, "route: 지도 없는 팀은 domains.json repos")
+    let shared = DomainReview.route(target: ReviewTarget(owner: "example-org", repo: "shared-admin", number: 3, url: "u"), map: rmap, team: team, rules: rules,
+                                    files: ["src/Areas/Coupon/A.cs", "src/Areas/Item/B.cs"], home: home)
+    check(shared.decided == nil && shared.hints.sharedDocs.count == 1 && shared.hints.sharedDocs[0].lowercased().hasSuffix("raw/common/repos/shared-admin.md")
+          && shared.hints.ruleCounts["coupon"] == 1 && shared.hints.ruleCounts["product"] == 1, "route: 공용 문서는 읽을거리, 경로 규칙 둘이면 3단계로")
+    let adminTarget = ReviewTarget(owner: "example-org", repo: "shared-admin", number: 4, url: "u")
+    let byRule = DomainReview.route(target: adminTarget, map: rmap, team: team, rules: rules, files: ["src/Areas/Item/B.cs"], home: home)
+    check(byRule.decided?.domain == "product" && byRule.decided?.source == DomainReview.Source.pathRule, "route: 경로 규칙 한 도메인이면 확정")
+    let byTwoFiles = DomainReview.route(target: adminTarget, map: rmap, team: team, rules: rules,
+                                        files: ["src/Areas/Coupon/A.cs", "src/Areas/Coupon/B/C.cs", "README.md"], home: home)
+    check(byRule.decided?.why == "src/Areas/Item 아래 1개 파일" && byTwoFiles.decided?.why == "src/Areas/Coupon 아래 2개 파일",
+          "route: 경로 규칙 근거는 규칙 경로의 와일드카드 앞 폴더와 파일 수")
+    let loose = PathRules.parse(Data(#"{"example-org/shared-admin": [{"path": "Coupon*/**", "domain": "coupon"}, {"path": "**/Item.cs", "domain": "product"}]}"#.utf8))
+    let looseCoupon = DomainReview.route(target: adminTarget, map: rmap, team: team, rules: loose, files: ["CouponA/x.cs", "CouponB/y/z.cs"], home: home)
+    let looseItem = DomainReview.route(target: adminTarget, map: rmap, team: team, rules: loose, files: ["src/Item.cs"], home: home)
+    check(looseCoupon.decided?.why == "Coupon*/** 에 맞는 파일 2개" && looseItem.decided?.why == "**/Item.cs 에 맞는 파일 1개",
+          "route: 와일드카드 앞 폴더가 없는 규칙의 근거는 glob 그대로")
+    var unusable = team
+    unusable.teams = ["pricing": TeamEntry(kb: "kb/pricing-kb", repoMap: "raw/{domain}/repos/{repo}.md", domains: ["legacy"])]
+    let skipped = DomainReview.route(target: ReviewTarget(owner: "example-org", repo: "shared-admin", number: 9, url: "u"), map: rmap, team: unusable, rules: noRules,
+                                     files: ["a.cs"], home: home)
+    check(skipped.decided == nil && skipped.hints.sharedDocs.isEmpty && skipped.hints.mapDomains.isEmpty, "route: 쓸 수 있는 팀 도메인이 없으면 팀 KB 폴더를 훑지 않음")
+    check(MateCLI.parseFileList("a.cs\r\n\r\n b.cs \nc.cs\na.cs\n") == ["a.cs", "b.cs", "c.cs"] && MateCLI.parseFileList("").isEmpty,
+          "review: 바뀐 파일 목록 읽기 (여러 쪽·빈 줄·CRLF)")
+    // sample-web 이 coupon·discount 두 폴더에 다 있는 경우 (파일 추가 후)
+    doc("coupon/repos/sample-web.md")
+    doc("discount/repos/sample-web.md")
+    let twoMaps = DomainReview.route(target: ReviewTarget(owner: "acme", repo: "sample-web", number: 5, url: "u"), map: rmap, team: team, rules: noRules,
+                                     files: ["a.cs"], home: home)
+    check(twoMaps.decided == nil && twoMaps.hints.mapDomains == ["coupon", "discount"], "route: 지도 두 도메인이면 미정")
+    let noKb = DomainReview.route(target: ReviewTarget(owner: "acme", repo: "sample.web", number: 6, url: "u"), map: rmap, team: team, rules: noRules,
+                                  files: ["a.cs"], home: home + "/nope")
+    check(noKb.decided == nil, "route: 팀 KB 폴더가 없으면 1단계 건너뜀 (예외 없음)")
+    let noTeamListed = DomainReview.route(target: ReviewTarget(owner: "acme", repo: "sample-item-api", number: 7, url: "u"), map: rmap, team: nil, rules: noRules,
+                                          files: ["a.cs"], home: home)
+    let noTeamMap = DomainReview.route(target: ReviewTarget(owner: "acme", repo: "sample.web", number: 7, url: "u"), map: rmap, team: nil, rules: noRules,
+                                       files: ["a.cs"], home: home)
+    check(noTeamListed.decided?.source == DomainReview.Source.listed && noTeamMap.decided == nil, "route: 팀 설정이 없으면 팀 KB 지도는 건너뛰고 domains.json repos 만")
+    var pricingOnly = team
+    pricingOnly.myTeams = ["pricing"]
+    let notCandidate = DomainReview.route(target: ReviewTarget(owner: "acme", repo: "sample-item-api", number: 8, url: "u"), map: rmap, team: pricingOnly, rules: noRules,
+                                          files: ["a.cs"], home: home)
+    check(notCandidate.decided == nil, "route: 후보가 아닌 도메인의 repos 는 1단계에 쓰지 않음")
+    // 앱의 순서: 1단계가 정하면 파일을 조회하지 않는다. 못 정하면 조회하고, 조회 실패는 default·"파일 조회 실패"
+    final class RouteCalls: @unchecked Sendable { var fetches = 0; var rules = 0 }
+    let calls = RouteCalls()
+    let early = await DomainReview.resolve(target: ReviewTarget(owner: "acme", repo: "sample.web", number: 10, url: "u"), map: rmap, team: team,
+                                           rules: { calls.rules += 1; return rules }, home: home) { calls.fetches += 1; return nil }
+    let earlyOk = early.decided?.domain == "coupon" && early.decided?.source == DomainReview.Source.teamMap && early.hints.files.isEmpty
+    check(earlyOk && calls.fetches == 0 && calls.rules == 0, "route: 1단계가 정하면 파일을 조회하지 않음 (파일 없이 확정)")
+    let adminUndecided = ReviewTarget(owner: "example-org", repo: "shared-admin", number: 11, url: "u")
+    let failed = await DomainReview.resolve(target: adminUndecided, map: rmap, team: team,
+                                            rules: { calls.rules += 1; return rules }, home: home) { calls.fetches += 1; return nil }
+    let failedOk = failed.decided?.domain == "default" && failed.decided?.why == "파일 조회 실패" && failed.decided?.source == DomainReview.Source.fallback
+    check(failedOk && DomainReview.fetchFailed == "파일 조회 실패" && calls.fetches == 1 && calls.rules == 0,
+          "route: 1단계가 못 정한 뒤 파일 조회가 실패하면 default (2·3단계 없음)")
+    let later = await DomainReview.resolve(target: ReviewTarget(owner: "example-org", repo: "shared-admin", number: 12, url: "u"), map: rmap, team: team,
+                                           rules: { calls.rules += 1; return rules }, home: home) { calls.fetches += 1; return ["src/Areas/Item/B.cs"] }
+    let laterOk = later.decided?.domain == "product" && later.decided?.source == DomainReview.Source.pathRule && later.hints.files == ["src/Areas/Item/B.cs"]
+    check(laterOk && calls.fetches == 2 && calls.rules == 1, "route: 1단계가 못 정하면 파일을 조회해 2단계")
+    let cands = DomainReview.candidates(map: rmap, team: team)
+    check(DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"product\", \"why\": \"상품 화면\"}\n```", candidates: cands)?.domain == "product"
+          && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"legacy\"}\n```", candidates: cands) == nil
+          && DomainReview.extract(from: "```pokemate-domain\n{\"domain\": \"default\"}\n```", candidates: cands)?.domain == "default", "route: 3단계 답은 후보·default 만")
+    let undecided = "도메인을 정하지 못해 default 로 리뷰"
+    let decidedProduct = DomainReview.decide("```pokemate-domain\n{\"domain\": \"product\", \"why\": \"상품 화면\"}\n```", candidates: cands)
+    let decidedNone = DomainReview.decide("```pokemate-domain\n{\"domain\": \"default\", \"why\": \"맞는 도메인 없음\"}\n```", candidates: cands)
+    let decidedBare = DomainReview.decide("```pokemate-domain\n{\"domain\": \"default\"}\n```", candidates: cands)
+    let decidedLegacy = DomainReview.decide("```pokemate-domain\n{\"domain\": \"legacy\"}\n```", candidates: cands)
+    let decidedFailed = DomainReview.decide(nil, candidates: cands)
+    let ok1 = decidedProduct.domain == "product" && decidedProduct.why == "상품 화면" && decidedProduct.source == .chosen
+    let ok2 = decidedNone.domain == "default" && decidedNone.why == "맞는 도메인 없음" && decidedNone.source == .fallback
+    let ok3 = decidedBare.domain == "default" && decidedBare.why == undecided && decidedBare.source == .fallback
+    let ok4 = decidedLegacy.domain == "default" && decidedLegacy.why == undecided && decidedLegacy.source == .fallback
+    let ok5 = decidedFailed.domain == "default" && decidedFailed.why == undecided && decidedFailed.source == .fallback
+    let ok6 = DomainReview.undecided == undecided
+    check(ok1 && ok2 && ok3 && ok4 && ok5 && ok6,
+          "route: 3단계 답 판정 (후보 Chosen, default·못 읽음·실패는 Fallback, 이유 없는 default 는 정하지 못함)")
+    var guided = team
+    guided.repoGuide = "example-org/repo-guide"
+    let routeChooser = DomainReview.choosePrompt(target: ReviewTarget(owner: "example-org", repo: "shared-admin", number: 3, url: "u"), map: rmap, team: guided,
+                                                 hints: shared.hints, helper: "H")
+    check(routeChooser.contains("- product (product 팀)") && routeChooser.contains("H gh-get repos/example-org/repo-guide/contents/maps/example-org/shared-admin.md")
+          && routeChooser.contains("경로 규칙 후보: coupon 1개, product 1개") && routeChooser.contains("shared-admin.md") && routeChooser.contains("default"),
+          "route: 3단계 안내에 후보·팀·레포 지도·공용 문서·규칙 후보")
+    check(routeChooser.contains("- coupon (pricing 팀) · 쿠폰 · 키워드: coupon") && routeChooser.contains("src/Areas/Item/B.cs") && !routeChooser.contains("pulls/3/files")
+          && !routeChooser.contains("\\"), "route: 3단계 안내에 바뀐 파일 목록, 경로는 / 구분")
+    let manyFiles = (1...203).map { "f\($0).cs" }
+    let many = DomainReview.choosePrompt(target: ReviewTarget(owner: "acme", repo: "sample-web", number: 5, url: "u"), map: rmap, team: team,
+                                         hints: RouteHints(files: manyFiles, mapDomains: ["coupon", "discount"]), helper: "H")
+    check(many.contains("f200.cs") && !many.contains("f201.cs") && many.contains("외 3개") && many.contains("1단계 후보: coupon, discount") && !many.contains("팀 KB 지도 후보"),
+          "route: 바뀐 파일은 200개까지, 1단계 후보")
+    let body = DomainReview.reviewPrompt(target: ReviewTarget(owner: "acme", repo: "sample.web", number: 1, url: "u"), domain: "coupon",
+                                         why: "pricing 팀 KB raw/coupon/repos/Sample.Web.md", source: .teamMap, firstRun: true, notes: notes, helper: "H", context: "본문")
+    check(body.contains("도메인: coupon — 팀 KB 지도: pricing 팀 KB raw/coupon/repos/Sample.Web.md"), "route: 확인한 범위 첫 줄 형식")
+    try? FileManager.default.removeItem(at: tmp)
+
     let rows = Data(#"[{"kind":"settings","id":"automation","domainNotesDir":"~/kb/notes"},{"id":"jira"}]"#.utf8)
     check(DomainNotes.root(fromConnections: rows, home: "/u") == "/u/kb/notes" && DomainNotes.root(fromConnections: nil, home: "/u") == "/u/.claude/references/notes"
           && DomainNotes.root(fromConnections: Data(#"[{"kind":"settings","id":"automation","domainNotesDir":" "}]"#.utf8), home: "/u") == "/u/.claude/references/notes",
@@ -1630,10 +1823,13 @@ do {
           "eval: 읽기 명령과 스킬만 허용, 쓰기 막는 환경")
     let emap = DomainMap.parse(Data(#"{"acme": {"repos": ["sample-docs"]}}"#.utf8))
     let target = ReviewTarget.parse(url: cases[0].url)!
-    check(ReviewEval.domain(for: cases[0], target: target, map: emap, book: ReviewDomainBook()).domain == "acme"
-          && ReviewEval.domain(for: cases[1], target: ReviewTarget.parse(url: cases[1].url)!, map: emap, book: ReviewDomainBook()).source == .explicit
-          && ReviewEval.domain(for: ReviewEvalCase(id: "x", url: cases[0].url, domain: "nope"), target: target, map: emap, book: ReviewDomainBook()).domain == "default",
-          "eval: 도메인은 문제에 적은 것 → 기록 → default")
+    let missing = ReviewEval.domain(for: ReviewEvalCase(id: "x", url: cases[0].url, domain: "nope"), target: target, map: emap)
+    check(ReviewEval.domain(for: cases[0], target: target, map: emap).domain == "acme"
+          && ReviewEval.domain(for: cases[1], target: ReviewTarget.parse(url: cases[1].url)!, map: emap).source == .listed
+          && missing.domain == "default" && missing.source == .fallback,
+          "eval: 도메인은 문제에 적은 것 → domains.json repos → default")
+    let fixedEval = ReviewEval.domain(for: cases[0], target: target, map: emap)
+    check(fixedEval.why == "평가 문제에 정한 도메인" && fixedEval.source == .listed, "eval: 문제에 정한 도메인은 정해진 도메인(Listed), PR 판단 아님")
     let ep = ReviewEval.prompt(item: cases[0], target: target, domain: "acme", why: "평가", source: .chosen, notes: DomainNotes(root: "/n", lines: { _ in 3 }),
                                helper: "H", template: "리뷰 {{helper}} gh-diff\n{{knowledge}}", knowledge: "   - `kb`")
     check(ep.contains("리뷰 H gh-diff") && ep.contains("   - `kb`") && !ep.contains("{{") && ep.contains("```pokemate-eval") && ep.contains("링크: \(cases[0].url)")
@@ -1765,6 +1961,9 @@ do {
           && Handoffs.findings("결함: pricing.py:9 0 나누기\n결함 없이 미확인만 있음") == ["결함: pricing.py:9 0 나누기"]
           && Handoffs.findings("결함마다 파일:줄\n- 이건 아님").isEmpty,
           "handoff: '없음'·머리말이 아닌 줄은 지적으로 치지 않음")
+    let answer = "[r#1](https://x/pull/1) · 댓글 · 결함 1건\n결함:\n- a.py:3 음수 가격\n미확인(질문): 없음\n확인한 범위:\n- 도메인: coupon — 경로 규칙: x\n- 못 읽은 것: 없음\n참고한 근거:\n- 점검표"
+    check(Handoffs.findings(answer) == ["결함: a.py:3 음수 가격"],
+          "handoff: 마지막 답 뒤의 확인한 범위·참고한 근거 항목은 지적으로 치지 않음")
     check(Handoffs.summary(note: "다음에 할 일", answer: "답 본문\n```pokemate-next\n{\"next\": \"pm\"}\n```") == "다음에 할 일\n답: 답 본문"
           && Handoffs.summary(note: "", answer: "한 줄 답") == "한 줄 답" && Handoffs.summary(note: String(repeating: "가", count: 900), answer: "x").count == 600,
           "handoff: 요약은 note 와 답 앞부분 (600자 안, 새로 묻지 않음)")

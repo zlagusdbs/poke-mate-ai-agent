@@ -230,6 +230,9 @@ private struct WorkSessionDetail: View {
     @StateObject private var chat: ChatSession
     @State private var entries: [TranscriptEntry] = []
     @State private var input = ""
+    /// 사용자가 직접 펼치거나 접은 작업 건 (기본은 마지막 건만 펼침)
+    @State private var opened = Set<String>()
+    @State private var closed = Set<String>()
 
     init(repo: String, model: AppModel, close: @escaping () -> Void) {
         self.repo = repo
@@ -258,16 +261,9 @@ private struct WorkSessionDetail: View {
                             Text(session?.id.isEmpty == true ? "아직 대화가 없어요. 첫 메시지를 보내면 레포 지식부터 모아요." : "기록 파일을 찾지 못했어요.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        ForEach(entries) { e in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\(label(e.kind)) · \(e.time)").font(.caption2.weight(.semibold)).foregroundStyle(color(e.kind))
-                                if e.kind == .assistant {
-                                    MarkdownContent(text: e.text).font(.callout).textSelection(.enabled)
-                                } else {
-                                    Text(e.text).font(e.kind == .tool || e.kind == .result ? .caption.monospaced() : .callout)
-                                        .foregroundStyle(e.kind == .result ? Color.secondary : Color.primary).textSelection(.enabled)
-                                }
-                            }
+                        let groups = TranscriptGroups.split(entries)
+                        ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                            groupView(group, latest: index == groups.count - 1)
                         }
                         if chat.isBusy, let last = chat.messages.last(where: { $0.role == .user }) {
                             Text("보낸 말 · 지금").font(.caption2.weight(.semibold)).foregroundStyle(Color.orange)
@@ -317,6 +313,52 @@ private struct WorkSessionDetail: View {
         guard !text.isEmpty, !chat.isBusy else { return }
         input = ""
         chat.send(text)
+    }
+
+    /// 작업 건 하나: 위 구분선, 누르면 접고 펴는 머리줄(▸/▾ · 제목 · 시각), 펼치면 줄들 (기본은 마지막 건만 펼침)
+    @ViewBuilder
+    private func groupView(_ group: TranscriptGroup, latest: Bool) -> some View {
+        let expanded = latest ? !closed.contains(group.key) : opened.contains(group.key)
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            Button {
+                if latest {
+                    if closed.remove(group.key) == nil { closed.insert(group.key) }
+                } else {
+                    if opened.remove(group.key) == nil { opened.insert(group.key) }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2).foregroundStyle(.secondary).frame(width: 12)
+                    Text(group.title).font(.caption.weight(.semibold)).lineLimit(1).help(group.title)
+                    Spacer(minLength: 8)
+                    Text(group.time).font(.caption2).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(expanded ? "눌러서 접기" : "눌러서 펼치기")
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(group.entries) { e in entryView(e) }
+                }
+                .padding(.leading, 18)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func entryView(_ e: TranscriptEntry) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(label(e.kind)) · \(e.time)").font(.caption2.weight(.semibold)).foregroundStyle(color(e.kind))
+            if e.kind == .assistant {
+                MarkdownContent(text: e.text).font(.callout).textSelection(.enabled)
+            } else {
+                let mono = e.kind == .tool || e.kind == .result
+                Text(e.text).font(mono ? .caption.monospaced() : .callout)
+                    .foregroundStyle(mono ? Color.secondary : Color.primary).textSelection(.enabled)
+            }
+        }
     }
 
     private func label(_ k: TranscriptEntry.Kind) -> String {

@@ -23,98 +23,293 @@ public struct ReviewTarget: Equatable, Sendable {
     }
 }
 
-public struct ReviewDomainChoice: Codable, Equatable, Sendable {
-    public var domain: String
-    public var why: String
-    public var at: Date
+/// 도메인 정하기 3단계(PR 판단)에 넘기는 읽을거리. `files` 는 바뀐 파일, `sharedDocs` 는 팀 KB 공용 문서(`/` 구분 전체 경로),
+/// `mapDomains` 는 1단계(팀 KB 지도·domains.json repos)에서 나온 도메인들, `ruleCounts` 는 2단계 경로 규칙의 도메인 → 파일 수.
+public struct RouteHints: Equatable, Sendable {
+    public var files: [String]
+    public var sharedDocs: [String]
+    public var mapDomains: [String]
+    public var ruleCounts: [String: Int]
 
-    public init(domain: String, why: String, at: Date) {
-        self.domain = domain
-        self.why = why
-        self.at = at
+    public init(files: [String] = [], sharedDocs: [String] = [], mapDomains: [String] = [], ruleCounts: [String: Int] = [:]) {
+        self.files = files
+        self.sharedDocs = sharedDocs
+        self.mapDomains = mapDomains
+        self.ruleCounts = ruleCounts
     }
 }
 
-public struct ReviewDomainBook: Codable, Equatable, Sendable {
-    public var repos: [String: ReviewDomainChoice] = [:]
-
-    public init(repos: [String: ReviewDomainChoice] = [:]) { self.repos = repos }
-
-    public static var file: URL { AppPaths.dataDir.appendingPathComponent("automation/state/review-domains.json") }
-
-    public static func load(from file: URL = file) -> ReviewDomainBook {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let data = try? Data(contentsOf: file), let book = try? decoder.decode(ReviewDomainBook.self, from: data) else { return ReviewDomainBook() }
-        return book
-    }
-
-    public func save(to file: URL = file) {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? encoder.encode(self).write(to: file, options: .atomic)
-    }
-}
-
+/// PR 리뷰를 도메인 리뷰어 세션(`{도메인}:reviewer`)에 맡기는 흐름: 도메인 정하기와 리뷰 프롬프트.
+/// 도메인 정하기: 1. 팀 KB 지도·domains.json repos → (못 정하면) 바뀐 파일 조회(실패하면 default) → 2. 경로 규칙 → 3. PR 판단(Claude) → default. 결과는 저장하지 않는다.
 public enum DomainReview {
     public static let tag = "pokemate-domain"
     public static let fallback = DomainMap.defaultKey
+    /// 3단계 안내에 넣는 바뀐 파일 수 상한
+    public static let fileLimit = 200
 
+    /// 도메인을 어디서 알았나 (단계). `rawValue` 는 근거 줄의 단계 이름.
     public enum Source: String, Sendable {
-        case explicit = "domains.json 의 repos"
-        case learned = "예전에 정한 기록"
-        case chosen = "이번에 PR 내용으로 정함"
+        case teamMap = "팀 KB 지도"
+        case listed = "domains.json 의 repos"
+        case pathRule = "경로 규칙"
+        case chosen = "PR 판단"
+        case fallback = "기본값"
     }
 
+    /// 정한 도메인, 근거, 단계
+    public typealias Decision = (domain: String, why: String, source: Source)
+
+    /// 지도 전체 기준 (평가 문제의 고정 도메인 확인용)
     public static func valid(_ domain: String, map: DomainMap) -> Bool {
         domain == fallback || map.domains[domain] != nil
     }
 
-    public static func known(_ target: ReviewTarget, map: DomainMap, book: ReviewDomainBook) -> (domain: String, why: String, source: Source)? {
-        if let domain = map.domains.keys.sorted().first(where: { map.domains[$0]?.contains(target.repo) == true }) {
-            return (domain, "domains.json 의 \(domain) repos 에 \(target.repo) 가 있음", .explicit)
-        }
-        if let learned = book.repos[target.fullName], valid(learned.domain, map: map) {
-            return (learned.domain, learned.why, .learned)
-        }
-        return nil
+    /// 도메인 후보: 내 팀들의 도메인(`TeamConfig.candidates`), 팀 설정이 없으면 domains.json 의 모든 도메인(이름순). default 는 따로.
+    public static func candidates(map: DomainMap, team: TeamConfig?) -> [String] {
+        team?.candidates(map: map) ?? map.domains.keys.sorted()
     }
 
-    public static func choosePrompt(target: ReviewTarget, map: DomainMap, helper: String) -> String {
-        let lines = map.domains.keys.sorted().map { name -> String in
-            var parts = ["- \(name)"]
+    /// domains.json 의 repos 에 이 레포가 있는 도메인 (이름순 첫 번째, 레포 이름은 대소문자 무시). 평가용.
+    public static func listed(_ target: ReviewTarget, map: DomainMap) -> Decision? {
+        listedHits(target, map: map, candidates: map.domains.keys.sorted()).first
+    }
+
+    static func listedHits(_ target: ReviewTarget, map: DomainMap, candidates: [String]) -> [Decision] {
+        let repo = target.repo.lowercased()
+        return candidates
+            .filter { domain in map.domains[domain]?.contains { $0.lowercased() == repo } == true }
+            .map { domain -> Decision in (domain, "domains.json 의 \(domain) repos 에 \(target.repo) 가 있음", .listed) }
+    }
+
+    /// 1단계. 내 팀마다 `repoMap` 의 `{domain}` 자리 폴더를 훑어 `{repo}` 문서를 대소문자 무시로 찾는다.
+    /// 폴더가 그 팀의 후보 도메인이면 Hit(`teamMap`), 아니면 그 문서를 공용 문서(`sharedDocs`, `/` 구분 전체 경로)로 넘긴다. 팀 KB 폴더가 없으면 건너뛴다.
+    /// 쓸 수 있는 팀 도메인(domains.json 에 있는 것)이 하나도 없으면 팀 KB 는 훑지 않는다.
+    /// 이어서 후보 도메인의 domains.json repos 에 레포가 있으면 Hit(`listed`).
+    public static func mapLookup(target: ReviewTarget, map: DomainMap, team: TeamConfig?, candidates: [String],
+                                 home: String = NSHomeDirectory()) -> (hits: [Decision], sharedDocs: [String]) {
+        var hits: [Decision] = []
+        var shared: [String] = []
+        // 쓸 수 있는 팀(domains.json 에 있는 도메인을 가진 팀)이 하나도 없으면 팀 KB 지도는 건너뛰고 domains.json repos 만 본다 (스펙 4-2)
+        var mine = team?.mine() ?? []
+        if !mine.contains(where: { m in m.entry.domains.contains { map.domains[$0] != nil } }) { mine = [] }
+        for m in mine {
+            guard let pattern = m.entry.repoMap else { continue }
+            for doc in repoDocs(kb: DomainMap.resolvePath(m.entry.kb, home: home), pattern: pattern, repo: target.repo) {
+                let folder = doc.folder.lowercased()
+                if let domain = m.entry.domains.first(where: { candidates.contains($0) && $0.lowercased() == folder }) {
+                    let hit: Decision = (domain, "\(m.team) 팀 KB \(doc.relative)", .teamMap)
+                    hits.append(hit)
+                } else if !shared.contains(doc.full) {
+                    shared.append(doc.full)
+                }
+            }
+        }
+        hits += listedHits(target, map: map, candidates: candidates)
+        return (hits, shared)
+    }
+
+    /// 팀 KB 에서 `pattern` 의 `{domain}` 자리 폴더(이름순)마다 `{repo}` 문서를 찾는다. 경로 조각은 대소문자 무시, 결과는 실제 이름.
+    /// `folder` 는 `{domain}` 자리 값, `relative` 는 팀 KB 안의 `/` 구분 경로. `{domain}` 이 없는 패턴·없는 폴더는 빈 목록.
+    static func repoDocs(kb: String, pattern: String, repo: String) -> [(folder: String, relative: String, full: String)] {
+        var found: [(folder: String, relative: String, full: String)] = []
+        let parts = pattern.replacingOccurrences(of: "\\", with: "/").split(separator: "/").map(String.init).filter { $0 != "." }
+        guard let at = parts.firstIndex(where: { $0.contains("{domain}") }), at != parts.count - 1 else { return found }
+        var dir = kb
+        var head: [String] = []
+        for i in 0..<at {
+            guard let name = child(dir, parts[i].replacingOccurrences(of: "{repo}", with: repo), file: false) else { return found }
+            dir = (dir as NSString).appendingPathComponent(name)
+            head.append(name)
+        }
+        let slot = parts[at]
+        guard let k = slot.range(of: "{domain}") else { return found }
+        let pre = String(slot[..<k.lowerBound]).replacingOccurrences(of: "{repo}", with: repo)
+        let post = String(slot[k.upperBound...]).replacingOccurrences(of: "{repo}", with: repo)
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return found }
+        for folder in entries.filter({ isDirectory((dir as NSString).appendingPathComponent($0)) }).sorted() {
+            guard folder.count > pre.count + post.count, folder.lowercased().hasPrefix(pre.lowercased()),
+                  folder.lowercased().hasSuffix(post.lowercased()) else { continue }
+            let domain = String(folder.dropFirst(pre.count).dropLast(post.count))
+            var current = (dir as NSString).appendingPathComponent(folder)
+            var relative = head + [folder]
+            var ok = true
+            for j in (at + 1)..<parts.count {
+                let want = parts[j].replacingOccurrences(of: "{repo}", with: repo).replacingOccurrences(of: "{domain}", with: domain)
+                guard let name = child(current, want, file: j == parts.count - 1) else {
+                    ok = false
+                    break
+                }
+                current = (current as NSString).appendingPathComponent(name)
+                relative.append(name)
+            }
+            if ok { found.append((domain, relative.joined(separator: "/"), current)) }
+        }
+        return found
+    }
+
+    /// 폴더 안에서 이름이 대소문자 무시로 같은 파일(또는 폴더)의 실제 이름. 없으면 nil.
+    static func child(_ dir: String, _ name: String, file: Bool) -> String? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
+        let want = name.lowercased()
+        return entries.filter { isDirectory((dir as NSString).appendingPathComponent($0)) != file }.sorted().first { $0.lowercased() == want }
+    }
+
+    static func isDirectory(_ path: String) -> Bool {
+        var flag: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &flag) && flag.boolValue
+    }
+
+    /// 바뀐 파일 조회에 실패했을 때의 근거 (default 로 리뷰)
+    public static let fetchFailed = "파일 조회 실패"
+
+    /// 1단계 결과. `decided` 는 1단계 도메인이 정확히 하나일 때 첫 Hit, `mapDomains` 는 1단계 도메인들(중복 없이 나온 순서).
+    public struct RouteStart: Sendable {
+        public let candidates: [String]
+        public let decided: Decision?
+        public let sharedDocs: [String]
+        public let mapDomains: [String]
+    }
+
+    /// 1단계(팀 KB 지도·domains.json repos). 바뀐 파일이 필요 없다.
+    public static func start(target: ReviewTarget, map: DomainMap, team: TeamConfig?, home: String = NSHomeDirectory()) -> RouteStart {
+        let cands = Self.candidates(map: map, team: team)
+        let lookup = mapLookup(target: target, map: map, team: team, candidates: cands, home: home)
+        var domains: [String] = []
+        for hit in lookup.hits where !domains.contains(hit.domain) { domains.append(hit.domain) }
+        let first: Decision? = domains.count == 1 ? lookup.hits[0] : nil
+        return RouteStart(candidates: cands, decided: first, sharedDocs: lookup.sharedDocs, mapDomains: domains)
+    }
+
+    /// 1단계에 이어 2단계(경로 규칙). 1단계가 정했으면 그 Hit, 아니면 경로 규칙이 한 도메인이면 `pathRule`.
+    /// 못 정하면 `decided` 는 nil 이고 `hints` 를 3단계(`choosePrompt`)에 넘긴다.
+    public static func finish(target: ReviewTarget, start: RouteStart, rules: PathRules, files: [String]) -> (decided: Decision?, hints: RouteHints) {
+        if let hit = start.decided {
+            return (hit, RouteHints(files: files, sharedDocs: start.sharedDocs, mapDomains: start.mapDomains, ruleCounts: [:]))
+        }
+        let verdict = rules.judge(fullName: target.fullName, files: files, candidates: start.candidates)
+        let routeHints = RouteHints(files: files, sharedDocs: start.sharedDocs, mapDomains: start.mapDomains, ruleCounts: verdict.counts)
+        if let domain = verdict.domain {
+            let byRule: Decision = (domain, ruleWhy(rules, fullName: target.fullName, files: files, candidates: start.candidates, domain: domain), .pathRule)
+            return (byRule, routeHints)
+        }
+        return (nil, routeHints)
+    }
+
+    /// 1·2단계로 도메인을 정한다 (바뀐 파일을 이미 알 때). `start` → `finish`.
+    public static func route(target: ReviewTarget, map: DomainMap, team: TeamConfig?, rules: PathRules, files: [String],
+                             home: String = NSHomeDirectory()) -> (decided: Decision?, hints: RouteHints) {
+        finish(target: target, start: Self.start(target: target, map: map, team: team, home: home), rules: rules, files: files)
+    }
+
+    /// 앱의 도메인 정하기 순서: 1단계가 정하면 바뀐 파일을 조회하지 않는다. 못 정하면 `fetch` 로 바뀐 파일을 조회하고
+    /// (실패면 default·`fetchFailed`) 2단계. `decided` 가 nil 이면 `hints` 를 3단계에 넘긴다. `rules` 는 2단계에 갈 때만 읽는다.
+    public static func resolve(target: ReviewTarget, map: DomainMap, team: TeamConfig?, rules: () -> PathRules, home: String = NSHomeDirectory(),
+                               fetch: () async -> [String]?) async -> (decided: Decision?, hints: RouteHints) {
+        let begun = start(target: target, map: map, team: team, home: home)
+        if let hit = begun.decided {
+            return (hit, RouteHints(files: [], sharedDocs: begun.sharedDocs, mapDomains: begun.mapDomains, ruleCounts: [:]))
+        }
+        guard let files = await fetch() else {
+            let failed: Decision = (fallback, fetchFailed, .fallback)
+            return (failed, RouteHints(files: [], sharedDocs: begun.sharedDocs, mapDomains: begun.mapDomains, ruleCounts: [:]))
+        }
+        return finish(target: target, start: begun, rules: rules(), files: files)
+    }
+
+    /// 경로 규칙 근거: 그 도메인 규칙 중 처음 맞은 파일이 가장 많은 규칙(같으면 앞 규칙)의 와일드카드 앞 폴더와 그 규칙의 파일 수.
+    /// 예: `src/Areas/Item 아래 1개 파일`
+    static func ruleWhy(_ rules: PathRules, fullName: String, files: [String], candidates: [String], domain: String) -> String {
+        let active = rules.rules(for: fullName).filter { candidates.contains($0.domain) }
+        var counts = Array(repeating: 0, count: active.count)
+        for file in files {
+            if let i = active.firstIndex(where: { PathRules.matches($0.path, file) }) { counts[i] += 1 }
+        }
+        var best = -1
+        for i in active.indices where active[i].domain == domain && (best < 0 || counts[i] > counts[best]) { best = i }
+        guard best >= 0 else { return "" }
+        let glob = active[best].path
+        if let folder = ruleFolder(glob) { return "\(folder) 아래 \(counts[best])개 파일" }
+        return "\(glob) 에 맞는 파일 \(counts[best])개"
+    }
+
+    /// glob 의 첫 와일드카드(`*`·`?`) 앞 폴더. 와일드카드 앞에 폴더가 없으면(`Coupon*/**`·`**/x.cs`) nil.
+    static func ruleFolder(_ glob: String) -> String? {
+        var g = glob.replacingOccurrences(of: "\\", with: "/")
+        while g.hasPrefix("./") || g.hasPrefix("/") { g.removeFirst(g.hasPrefix("./") ? 2 : 1) }
+        let head = g.firstIndex(where: { $0 == "*" || $0 == "?" }).map { String(g[..<$0]) } ?? g
+        guard let slash = head.lastIndex(of: "/"), slash > head.startIndex else { return nil }
+        return String(head[..<slash])
+    }
+
+    /// 3단계: 리뷰하지 않고 도메인만 정하게 하는 프롬프트 (읽기만). 후보는 `candidates` 와 default.
+    public static func choosePrompt(target: ReviewTarget, map: DomainMap, team: TeamConfig?, hints: RouteHints, helper: String) -> String {
+        let lines = candidates(map: map, team: team).map { name -> String in
+            var parts: [String] = []
+            if let owner = team?.teamOf(name) { parts.append("- \(name) (\(owner) 팀)") } else { parts.append("- \(name)") }
             if let text = map.descriptions[name] { parts.append(text) }
             if let words = map.keywords[name], !words.isEmpty { parts.append("키워드: " + words.joined(separator: ", ")) }
-            if let repos = map.domains[name], !repos.isEmpty { parts.append("레포: " + repos.joined(separator: ", ")) }
             return parts.joined(separator: " · ")
         } + ["- \(fallback) · 위 어느 도메인에도 맞지 않을 때"]
-        return """
-        지금은 리뷰하지 말고, 아래 PR 이 어느 도메인 일인지만 정한다. 읽기만 한다(GitHub·Jira 쓰기, 알림, 파일 쓰기 금지).
-        - PR: \(target.url)
-        - 볼 것 (명령은 한 번에 하나씩, 전체 명령 그대로):
-          `\(helper) gh-get repos/\(target.fullName)/pulls/\(target.number) --jq '{title,body}'`
-          `\(helper) gh-get repos/\(target.fullName)/pulls/\(target.number)/files --jq '[.[].filename]'`
-          제목·본문에 Jira 키가 있으면 `\(helper) jira-get --key {KEY}` 의 요약
-        - 도메인 목록:
-        \(lines.joined(separator: "\n"))
-        PR 의 제목·본문·파일 경로·Jira 요약에 나온 단어가 어느 도메인의 설명·키워드·레포와 맞는지로 고른다. 애매하면 더 많이 맞는 쪽, 하나도 안 맞으면 \(fallback).
-        답 끝에 아래 블록 하나만 붙인다.
-        ```\(tag)
-        {"domain": "도메인 이름", "why": "고른 이유 한 줄 (어떤 단어·파일이 어느 설명·키워드와 맞는지)"}
-        ```
-        """
+        var output = [
+            "지금은 리뷰하지 말고, 아래 PR 이 어느 도메인 일인지만 정한다. 읽기만 한다(GitHub·Jira 쓰기, 알림, 파일 쓰기 금지).",
+            "- PR: \(target.url)",
+            "- 볼 것 (명령은 한 번에 하나씩, 전체 명령 그대로):",
+            "  `\(helper) gh-get repos/\(target.fullName)/pulls/\(target.number) --jq '{title,body}'`",
+            "  제목·본문에 Jira 키가 있으면 `\(helper) jira-get --key {KEY}` 의 요약",
+        ]
+        if hints.files.isEmpty {
+            output.append("  `\(helper) gh-get repos/\(target.fullName)/pulls/\(target.number)/files --jq '[.[].filename]'`")
+        }
+        if let guide = team?.repoGuide {
+            output.append("  전사 레포 지도의 이 레포 문서(없으면 건너뛴다): `\(helper) gh-get repos/\(guide)/contents/maps/\(target.owner)/\(target.repo).md --jq '.content | @base64d'`")
+        }
+        output += hints.sharedDocs.map { "  팀 KB 공용 문서: `\($0.replacingOccurrences(of: "\\", with: "/"))`" }
+        if !hints.files.isEmpty {
+            output.append("- 바뀐 파일 (\(hints.files.count)개):")
+            output += hints.files.prefix(fileLimit).map { "  - \($0)" }
+            if hints.files.count > fileLimit { output.append("  - 외 \(hints.files.count - fileLimit)개") }
+        }
+        if !hints.ruleCounts.isEmpty {
+            let ordered = hints.ruleCounts.sorted { a, b in a.value != b.value ? a.value > b.value : a.key < b.key }
+            output.append("- 경로 규칙 후보: " + ordered.map { "\($0.key) \($0.value)개" }.joined(separator: ", "))
+        }
+        if !hints.mapDomains.isEmpty {
+            output.append("- 1단계 후보: " + hints.mapDomains.joined(separator: ", "))
+        }
+        output += [
+            "- 도메인 목록:",
+            lines.joined(separator: "\n"),
+            "PR 의 제목·본문·파일 경로·Jira 요약·레포 문서에 나온 단어가 어느 도메인의 설명·키워드와 맞는지로 고른다. 애매하면 더 많이 맞는 쪽, 하나도 안 맞으면 \(fallback).",
+            "조회가 실패하면 레포 이름만으로 고르지 말고 \(fallback) 로 답한다.",
+            "답 끝에 아래 블록 하나만 붙인다.",
+            "```" + tag,
+            #"{"domain": "도메인 이름", "why": "고른 이유 한 줄 (어떤 단어·파일이 어느 설명·키워드와 맞는지)"}"#,
+            "```",
+        ]
+        return output.joined(separator: "\n")
     }
 
-    public static func extract(from text: String, map: DomainMap) -> (domain: String, why: String)? {
-        guard let regex = try? NSRegularExpression(pattern: "```\(tag)[ \\t]*\\n(.*?)```", options: [.dotMatchesLineSeparators]),
+    /// 도메인 정하기 답에서 마지막 블록을 읽는다. 후보가 아니면 nil (default 는 됨). `why` 의 공백 묶음(줄바꿈 포함)은 빈칸 하나로.
+    public static func extract(from text: String, candidates: [String]) -> (domain: String, why: String)? {
+        guard let regex = try? NSRegularExpression(pattern: "```\(tag)[ \\t]*\\r?\\n(.*?)```", options: [.dotMatchesLineSeparators]),
               let m = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
               let r = Range(m.range(at: 1), in: text),
               let object = try? JSONSerialization.jsonObject(with: Data(text[r].utf8)) as? [String: Any],
-              let domain = (object["domain"] as? String)?.trimmingCharacters(in: .whitespaces), valid(domain, map: map) else { return nil }
-        let why = (object["why"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+              let domain = (object["domain"] as? String)?.trimmingCharacters(in: .whitespaces),
+              domain == fallback || candidates.contains(domain) else { return nil }
+        // 근거는 한 줄로: 줄바꿈·탭을 포함한 공백 묶음을 빈칸 하나로 (앞뒤 공백은 없앤다)
+        let why = ((object["why"] as? String) ?? "").split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         return (domain, why.isEmpty ? "이유 없음" : why)
+    }
+
+    /// 도메인을 정하지 못했을 때의 근거 (3단계 실패·판정 실패)
+    public static let undecided = "도메인을 정하지 못해 " + fallback + " 로 리뷰"
+
+    /// 3단계 답(실행 실패면 nil)으로 정한 도메인. 후보면 `chosen`, default 면 `fallback`(이유가 없으면 `undecided`), 못 읽으면 default·`undecided`.
+    public static func decide(_ answer: String?, candidates: [String]) -> Decision {
+        guard let answer, let choice = extract(from: answer, candidates: candidates) else { return (fallback, undecided, .fallback) }
+        if choice.domain != fallback { return (choice.domain, choice.why, .chosen) }
+        return (fallback, choice.why == "이유 없음" ? undecided : choice.why, .fallback)
     }
 
     public static func sessionKey(_ domain: String) -> String { PipelineRole.sessionKey(domain: domain, role: .reviewer) }
@@ -131,7 +326,7 @@ public enum DomainReview {
         이번 건: \(target.label) 리뷰 · 도메인 \(domain) (\(source.rawValue): \(why)) · 세션 \(session)
         \(start)
         \(notes.promptLines(domain: domain, helper: helper, source: target.label))
-        - 리뷰 본문 "확인한 범위" 첫 줄에 "도메인: \(domain) — \(why)" 를 적고, 시작 알림 result 끝에도 " · 도메인 \(domain)" 을 붙인다.
+        - 결과 문서 "확인한 범위" 첫 줄에 "도메인: \(domain) — \(source.rawValue): \(why)" 를 적고, 시작 알림 result 끝에도 " · 도메인 \(domain)" 을 붙인다.
         - 주변 코드: 로컬 레포 폴더(~/Workspace/\(target.repo))가 없으면 `\(helper) gh-file --repo \(target.fullName) --ref {head sha} --path {파일 경로}` 로 읽는다(이 PR 저장소만 된다). 그래도 못 읽으면 "확인한 범위" 에 적는다.
 
         \(context)

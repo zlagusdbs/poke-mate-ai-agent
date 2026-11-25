@@ -103,6 +103,9 @@ public static class SessionPolicyChecks
                    && Handoffs.Findings("결함: pricing.py:9 0 나누기\n결함 없이 미확인만 있음").SequenceEqual(new[] { "결함: pricing.py:9 0 나누기" })
                    && Handoffs.Findings("결함마다 파일:줄\n- 이건 아님").Count == 0,
                    "handoff: '없음'·머리말이 아닌 줄은 지적으로 치지 않음");
+        var answer = "[r#1](https://x/pull/1) · 댓글 · 결함 1건\n결함:\n- a.py:3 음수 가격\n미확인(질문): 없음\n확인한 범위:\n- 도메인: coupon — 경로 규칙: x\n- 못 읽은 것: 없음\n참고한 근거:\n- 점검표";
+        Check.That(Handoffs.Findings(answer).SequenceEqual(new[] { "결함: a.py:3 음수 가격" }),
+                   "handoff: 마지막 답 뒤의 확인한 범위·참고한 근거 항목은 지적으로 치지 않음");
         Check.That(Handoffs.Summary("다음에 할 일", "답 본문\n```pokemate-next\n{\"next\": \"pm\"}\n```") == "다음에 할 일\n답: 답 본문"
                    && Handoffs.Summary("", "한 줄 답") == "한 줄 답" && Chars(Handoffs.Summary(new string('가', 900), "x")) == 600,
                    "handoff: 요약은 note 와 답 앞부분 (600자 안, 새로 묻지 않음)");
@@ -149,7 +152,7 @@ public static class SessionPolicyChecks
                    "pr-case: 승인하면 보관(archivedAt)하고 기록은 남음");
         var (reopened, _) = ReviewCase.Begin(target, "acme", new SessionPolicy(), dir, t0.AddMinutes(200));
         Check.That(!reopened.IsArchived && reopened.Status == ReviewCase.StatusKind.Open && reopened.Handoffs!.Count == 2, "pr-case: 같은 PR 에 다시 요청이 오면 다시 엶 (메모 유지)");
-        Check.That(ReviewCase.Outcome("sample-web#12 · 닫힘") == ReviewCase.StatusKind.Closed && ReviewCase.Outcome("**sample-web#12 · 승인 · 결함 없음**") == ReviewCase.StatusKind.Approved
+        Check.That(ReviewCase.Outcome("sample-web#12 · 닫힘") == ReviewCase.StatusKind.Closed && ReviewCase.Outcome("[sample-web#12](https://git.example.com/acme/sample-web/pull/12) · 승인 · 결함 없음") == ReviewCase.StatusKind.Approved && ReviewCase.Outcome("**sample-web#12 · 승인 · 결함 없음**") == ReviewCase.StatusKind.Approved
                    && ReviewCase.Outcome("sample-web#12 · 확신할 수 없음 · diff 가 너무 큼") == null && ReviewCase.Outcome("승인 이유를 적는다") == null
                    && ReviewCase.Outcome("sample-web#12 · 건너뜀 · 팀 요청") == null,
                    "pr-case: 마지막 답 첫 줄의 결과로 승인·닫힘만 보관");

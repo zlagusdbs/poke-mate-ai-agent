@@ -75,11 +75,14 @@ public struct DomainMap: Equatable, Sendable {
     }
 
     public func knowledgePaths(for domain: String, home: String = NSHomeDirectory()) -> [String] {
-        (knowledge[domain] ?? defaultKnowledge).map { item in
-            if item.hasPrefix("~/") { return home + "/" + item.dropFirst(2) }
-            if item.hasPrefix("/") { return item }
-            return home + "/Workspace/" + item
-        }
+        (knowledge[domain] ?? defaultKnowledge).map { Self.resolvePath($0, home: home) }
+    }
+
+    /// 경로 한 개 해석. `~/` 는 홈, 절대 경로는 그대로, 나머지는 `홈/Workspace/` 아래.
+    public static func resolvePath(_ item: String, home: String) -> String {
+        if item.hasPrefix("~/") { return home + "/" + item.dropFirst(2) }
+        if item.hasPrefix("/") { return item }
+        return home + "/Workspace/" + item
     }
 
     public func knowledgeText(for domain: String, home: String = NSHomeDirectory()) -> String {
