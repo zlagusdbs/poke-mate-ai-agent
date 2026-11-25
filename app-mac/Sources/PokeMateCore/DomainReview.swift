@@ -326,7 +326,7 @@ public enum DomainReview {
         이번 건: \(target.label) 리뷰 · 도메인 \(domain) (\(source.rawValue): \(why)) · 세션 \(session)
         \(start)
         \(notes.promptLines(domain: domain, helper: helper, source: target.label))
-        - 리뷰 본문 "확인한 범위" 첫 줄에 "도메인: \(domain) — \(source.rawValue): \(why)" 를 적고, 시작 알림 result 끝에도 " · 도메인 \(domain)" 을 붙인다.
+        - 결과 문서 "확인한 범위" 첫 줄에 "도메인: \(domain) — \(source.rawValue): \(why)" 를 적고, 시작 알림 result 끝에도 " · 도메인 \(domain)" 을 붙인다.
         - 주변 코드: 로컬 레포 폴더(~/Workspace/\(target.repo))가 없으면 `\(helper) gh-file --repo \(target.fullName) --ref {head sha} --path {파일 경로}` 로 읽는다(이 PR 저장소만 된다). 그래도 못 읽으면 "확인한 범위" 에 적는다.
 
         \(context)

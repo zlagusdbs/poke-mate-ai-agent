@@ -163,7 +163,7 @@ PR 리뷰 요청
 ### 4-5. 근거 남기기
 
 - `DomainReview.Source` 를 바꾼다: `TeamMap`(팀 KB 지도) · `Listed`(domains.json repos) · `PathRule` · `Chosen`(PR 판단) · `Fallback`. `Learned` 는 없앤다.
-- 리뷰 본문 "확인한 범위" 첫 줄 형식: `도메인: {domain} — {단계 이름}: {근거}`.
+- 결과 문서 "확인한 범위" 첫 줄 형식(GitHub 본문에서는 끝의 Reference 절로 옮긴다): `도메인: {domain} — {단계 이름}: {근거}`.
   - 예: `도메인: coupon — 경로 규칙: src/Areas/Coupon 아래 4개 파일`
   - 예: `도메인: default — 기본값: 파일 조회 실패`
 - 작업 탭의 "리뷰 중" 표시에도 같은 줄을 쓴다(`SetReviewing`).
