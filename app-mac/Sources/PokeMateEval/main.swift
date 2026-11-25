@@ -55,7 +55,6 @@ let out = outDir ?? URL(fileURLWithPath: settings.repoDir).appendingPathComponen
 try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 let helper = PipelineAccess.helper(settings: settings)
 let map = DomainMap.load()
-let book = ReviewDomainBook.load()
 let notes = DomainNotes.load()
 let home = NSHomeDirectory()
 let bookFile = out.appendingPathComponent("sessions.json")
@@ -140,7 +139,7 @@ for item in cases {
         line("\(item.id) 시작 · 가상 레포 \(fixture.repo) · Jira 리뷰어 경로 · 도메인 \(domain)")
     } else {
         guard let target = ReviewTarget.parse(url: item.url) else { continue }
-        let chosen = ReviewEval.domain(for: item, target: target, map: map, book: book)
+        let chosen = ReviewEval.domain(for: item, target: target, map: map)
         domain = chosen.domain
         caseLabel = target.label
         if let reuse {

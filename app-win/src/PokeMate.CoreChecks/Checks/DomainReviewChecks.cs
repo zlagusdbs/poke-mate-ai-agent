@@ -2,7 +2,7 @@ using PokeMate.Core;
 
 namespace PokeMate.CoreChecks;
 
-// MARK: 도메인 리뷰어 (도메인 정하기·리뷰어 세션 안내·공유 노트 폴더). review-domains.json 은 임시 폴더에 쓴다.
+// MARK: 도메인 리뷰어 (도메인 정하기·리뷰어 세션 안내·공유 노트 폴더). 팀 KB 는 임시 폴더에 만든다.
 public static class DomainReviewChecks
 {
     public static async Task Run()
@@ -15,32 +15,33 @@ public static class DomainReviewChecks
                    && ReviewTarget.Parse("https://git.example.com/acme/sample-web/pull/abc") == null, "review: PR 주소 읽기 — 뒤에 더 붙은 경로·주소 아님·숫자 아님");
         var map = DomainMap.Parse("""{"acme": {"repos": ["acme-sample-service"], "description": "쿠폰·할인", "keywords": ["쿠폰", "coupon"], "knowledge": ["acme-kb"]}, "beta": {"repos": ["beta-api"]}, "default": {"knowledge": ["sample-notes"]}}""");
         Check.That(map.Descriptions["acme"] == "쿠폰·할인" && map.Keywords["acme"].SequenceEqual(new[] { "쿠폰", "coupon" }) && !map.Keywords.ContainsKey("beta"), "review: 도메인 설명·키워드 읽기");
-        var inRepo = new ReviewTarget("acme", "acme-sample-service", 1, "u");
-        var explicitHit = DomainReview.Known(inRepo, map, new ReviewDomainBook { Repos = { ["acme/acme-sample-service"] = new ReviewDomainChoice("beta", "x", DateTimeOffset.Now) } });
-        Check.That(explicitHit?.Domain == "acme" && explicitHit.Value.Source == DomainReview.Source.Explicit, "review: domains.json repos 가 예전 기록보다 이김");
+        var inRepo = new ReviewTarget("acme", "ACME-Sample-Service", 1, "u");
+        Check.That(DomainReview.Listed(inRepo, map) is { Domain: "acme", Source: DomainReview.Source.Listed } listed && listed.Why == "domains.json 의 acme repos 에 ACME-Sample-Service 가 있음",
+                   "review: domains.json repos (대소문자 무시)");
         var other = new ReviewTarget("acme", "sample-web", 2, "u");
-        var book = new ReviewDomainBook();
-        Check.That(DomainReview.Known(other, map, book) == null, "review: 처음 보는 레포는 도메인 정하기로");
-        book.Repos[other.FullName] = new ReviewDomainChoice("acme", "쿠폰함 화면", DateTimeOffset.Now);
-        Check.That(DomainReview.Known(other, map, book)?.Source == DomainReview.Source.Learned
-                   && DomainReview.Known(other, map, new ReviewDomainBook { Repos = { [other.FullName] = new ReviewDomainChoice("gone", "", DateTimeOffset.Now) } }) == null,
-                   "review: 정해 둔 기록을 쓰고, 없어진 도메인 기록은 무시");
-        var chooser = DomainReview.ChoosePrompt(other, map, "H");
-        Check.That(chooser.Contains("- acme · 쿠폰·할인 · 키워드: 쿠폰, coupon · 레포: acme-sample-service") && chooser.Contains("- default ·")
-                   && chooser.Contains("H gh-get repos/acme/sample-web/pulls/2/files"), "review: 도메인 정하기 안내에 목록·설명·키워드");
-        var chosen = DomainReview.Extract("답\n```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"쿠폰함\"}\n```", map);
+        Check.That(DomainReview.Listed(other, map) == null, "review: repos 에 없는 레포는 null");
+        Check.That(DomainReview.Candidates(map, null).SequenceEqual(new[] { "acme", "beta" }), "review: 팀 설정이 없으면 domains.json 전체가 후보 (이름순, default 제외)");
+        var chooser = DomainReview.ChoosePrompt(other, map, null, new RouteHints(Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), new Dictionary<string, int>()), "H");
+        Check.That(chooser.Contains("- acme · 쿠폰·할인 · 키워드: 쿠폰, coupon") && chooser.Contains("- default ·") && !chooser.Contains("(acme 팀)")
+                   && chooser.Contains("H gh-get repos/acme/sample-web/pulls/2/files") && !chooser.Contains("gh-get repos/example-org/repo-guide")
+                   && chooser.Contains("레포 이름만으로 고르지 말고") && chooser.Contains("```pokemate-domain"), "review: 도메인 정하기 안내에 목록·설명·키워드 (팀 없음, 파일 목록 없으면 조회 명령)");
+        var allCands = DomainReview.Candidates(map, null);
+        var chosen = DomainReview.Extract("답\n```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"쿠폰함\"}\n```", allCands);
         Check.That(chosen is { Domain: "acme", Why: "쿠폰함" }
-                   && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"nope\"}\n```", map) == null
-                   && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"default\"}\n```", map)?.Domain == "default"
-                   && DomainReview.Extract("```pokemate-domain\r\n{\"domain\": \"acme\"}\r\n```", map) is { Why: "이유 없음" },
+                   && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"nope\"}\n```", allCands) == null
+                   && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"default\"}\n```", allCands)?.Domain == "default"
+                   && DomainReview.Extract("```pokemate-domain\r\n{\"domain\": \"acme\"}\r\n```", allCands) is { Why: "이유 없음" },
                    "review: 도메인 블록 읽기 (없는 도메인은 거절, default 는 됨)");
+        Check.That(DomainReview.Extract("```pokemate-domain\n{\"domain\": \"acme\", \"why\": \"  쿠폰\\n\\n함  \\t 화면\\r\\n끝 \"}\n```", allCands) is { Why: "쿠폰 함 화면 끝" }
+                   && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"acme\", \"why\": \" \\n \"}\n```", allCands) is { Why: "이유 없음" },
+                   "review: 도메인 블록의 why 는 줄바꿈·탭 포함 공백 묶음을 빈칸 하나로 (비면 이유 없음)");
 
         // 노트 폴더 안의 점검표·노트는 항상 / 구분 경로로 안내한다 (Git Bash·Claude 가 그대로 읽는다)
         var present = new Dictionary<string, int> { ["C:/n/acme/checklist.md"] = 20, ["C:/n/acme/notes.md"] = 12 };
         var notes = new DomainNotes(@"C:\n", lines: p => present.TryGetValue(p, out var n) ? n : null);
         var empty = new DomainNotes(@"C:\n", lines: _ => null);
         var first = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Chosen, true, empty, "H", "본문");
-        var again = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Learned, false, notes, "H", "본문");
+        var again = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Listed, false, notes, "H", "본문");
         var unsure = DomainReview.ReviewPrompt(other, "default", "못 정함", DomainReview.Source.Chosen, true, notes, "H", "본문");
         var handed = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Chosen, true, notes, "H", "본문", "## 이번 건 인계\n- 리뷰어: 앞 리뷰");
         var resumedWithBlock = DomainReview.ReviewPrompt(other, "acme", "쿠폰함", DomainReview.Source.Chosen, false, notes, "H", "본문", "## 이번 건 인계\n- 리뷰어: 앞 리뷰");
@@ -57,8 +58,99 @@ public static class DomainReviewChecks
                    && !notes.PromptLines("acme", "H", "ACME-1", canWrite: false).Contains("domain-note")
                    && notes.PromptLines("acme", "H", "ACME-1", canWrite: false).Contains("읽기만"),
                    "review: 리뷰어 세션 안내 (새 세션·이어 쓰기·공유 노트·init·gh-file·domain-note·default)");
-        Check.That(first.Contains("도메인 acme (이번에 PR 내용으로 정함: 쿠폰함)") && again.Contains("도메인 acme (예전에 정한 기록: 쿠폰함)")
+        Check.That(first.Contains("도메인 acme (PR 판단: 쿠폰함)") && again.Contains("도메인 acme (domains.json 의 repos: 쿠폰함)")
                    && first.Contains("로컬 레포 폴더(~/Workspace/sample-web)"), "review: 도메인을 정한 근거를 안내에 적음");
+        Check.That(DomainReview.Source.TeamMap.Raw() == "팀 KB 지도" && DomainReview.Source.Listed.Raw() == "domains.json 의 repos" && DomainReview.Source.PathRule.Raw() == "경로 규칙"
+                   && DomainReview.Source.Chosen.Raw() == "PR 판단" && DomainReview.Source.Fallback.Raw() == "기본값", "route: 단계 이름");
+
+        // 도메인 정하기 1·2단계: 임시 홈 아래 팀 KB (`{홈}\Workspace\kb\pricing-kb`)
+        var tmp = Check.TempDir("pm-route");
+        var kbRaw = Path.Combine(tmp, "Workspace", "kb", "pricing-kb", "raw");
+        void Doc(string relative)
+        {
+            var path = Path.Combine(kbRaw, relative.Replace('/', '\\'));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, "# 레포");
+        }
+        Doc("coupon/repos/Sample.Web.md");
+        Doc("common/repos/shared-admin.md");
+        var team = new TeamConfig(new List<string> { "pricing", "product" }, null, new Dictionary<string, TeamEntry>
+        {
+            ["pricing"] = new("kb/pricing-kb", "raw/{domain}/repos/{repo}.md", new List<string> { "coupon", "discount" }),
+            ["product"] = new("kb/product-kb", null, new List<string> { "product" }),
+        });
+        map = DomainMap.Parse("""{"coupon": {"description": "쿠폰", "keywords": ["coupon"]}, "discount": {}, "product": {"repos": ["sample-item-api"], "description": "상품"}}""");
+        var rules = PathRules.Parse("""{"example-org/shared-admin": [{"path": "src/Areas/Coupon/**", "domain": "coupon"}, {"path": "src/Areas/Discount/**", "domain": "discount"}, {"path": "src/Areas/Item/**", "domain": "product"}]}""");
+        var hit = DomainReview.Route(new ReviewTarget("acme", "sample.web", 1, "u"), map, team, PathRules.Parse("{}"), new[] { "a.cs" }, tmp);
+        Check.That(hit.Decided is { Domain: "coupon", Source: DomainReview.Source.TeamMap } && hit.Decided.Value.Why.Contains("raw/coupon/repos"), "route: 팀 KB 지도 (대소문자 무시)");
+        Check.That(hit.Decided?.Why == "pricing 팀 KB raw/coupon/repos/Sample.Web.md", "route: 팀 KB 지도 근거는 팀 KB 안의 상대 경로");
+        Check.That(DomainReview.Route(new ReviewTarget("acme", "sample-item-api", 2, "u"), map, team, PathRules.Parse("{}"), new[] { "a.cs" }, tmp).Decided?.Source == DomainReview.Source.Listed, "route: 지도 없는 팀은 domains.json repos");
+        var shared = DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 3, "u"), map, team, rules, new[] { "src/Areas/Coupon/A.cs", "src/Areas/Item/B.cs" }, tmp);
+        Check.That(shared.Decided == null && shared.Hints.SharedDocs.Single().EndsWith("raw/common/repos/shared-admin.md", StringComparison.OrdinalIgnoreCase)
+                   && shared.Hints.RuleCounts["coupon"] == 1 && shared.Hints.RuleCounts["product"] == 1, "route: 공용 문서는 읽을거리, 경로 규칙 둘이면 3단계로");
+        var byRule = DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 4, "u"), map, team, rules, new[] { "src/Areas/Item/B.cs" }, tmp);
+        Check.That(byRule.Decided is { Domain: "product", Source: DomainReview.Source.PathRule }, "route: 경로 규칙 한 도메인이면 확정");
+        Check.That(byRule.Decided?.Why == "src/Areas/Item 아래 1개 파일"
+                   && DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 4, "u"), map, team, rules, new[] { "src/Areas/Coupon/A.cs", "src/Areas/Coupon/B/C.cs", "README.md" }, tmp).Decided?.Why == "src/Areas/Coupon 아래 2개 파일",
+                   "route: 경로 규칙 근거는 규칙 경로의 와일드카드 앞 폴더와 파일 수");
+        var loose = PathRules.Parse("""{"example-org/shared-admin": [{"path": "Coupon*/**", "domain": "coupon"}, {"path": "**/Item.cs", "domain": "product"}]}""");
+        Check.That(DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 4, "u"), map, team, loose, new[] { "CouponA/x.cs", "CouponB/y/z.cs" }, tmp).Decided?.Why == "Coupon*/** 에 맞는 파일 2개"
+                   && DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 4, "u"), map, team, loose, new[] { "src/Item.cs" }, tmp).Decided?.Why == "**/Item.cs 에 맞는 파일 1개",
+                   "route: 와일드카드 앞 폴더가 없는 규칙의 근거는 glob 그대로");
+        var unusable = team with { Teams = new Dictionary<string, TeamEntry> { ["pricing"] = new("kb/pricing-kb", "raw/{domain}/repos/{repo}.md", new List<string> { "legacy" }) } };
+        Check.That(DomainReview.Route(new ReviewTarget("example-org", "shared-admin", 9, "u"), map, unusable, PathRules.Parse("{}"), new[] { "a.cs" }, tmp) is { Decided: null } skipped
+                   && skipped.Hints.SharedDocs.Count == 0 && skipped.Hints.MapDomains.Count == 0,
+                   "route: 쓸 수 있는 팀 도메인이 없으면 팀 KB 폴더를 훑지 않음");
+        Check.That(MateCLI.ParseFileList("a.cs\r\n\r\n b.cs \nc.cs\na.cs\n").SequenceEqual(new[] { "a.cs", "b.cs", "c.cs" }) && MateCLI.ParseFileList("").Count == 0, "review: 바뀐 파일 목록 읽기 (여러 쪽·빈 줄·CRLF)");
+        // sample-web 이 coupon·discount 두 폴더에 다 있는 경우 (파일 추가 후)
+        Doc("coupon/repos/sample-web.md");
+        Doc("discount/repos/sample-web.md");
+        Check.That(DomainReview.Route(new ReviewTarget("acme", "sample-web", 5, "u"), map, team, PathRules.Parse("{}"), new[] { "a.cs" }, tmp) is { Decided: null } r && r.Hints.MapDomains.SequenceEqual(new[] { "coupon", "discount" }), "route: 지도 두 도메인이면 미정");
+        Check.That(DomainReview.Route(new ReviewTarget("acme", "sample.web", 6, "u"), map, team, PathRules.Parse("{}"), new[] { "a.cs" }, tmp + @"\nope").Decided == null, "route: 팀 KB 폴더가 없으면 1단계 건너뜀 (예외 없음)");
+        Check.That(DomainReview.Route(new ReviewTarget("acme", "sample-item-api", 7, "u"), map, null, PathRules.Parse("{}"), new[] { "a.cs" }, tmp).Decided?.Source == DomainReview.Source.Listed
+                   && DomainReview.Route(new ReviewTarget("acme", "sample.web", 7, "u"), map, null, PathRules.Parse("{}"), new[] { "a.cs" }, tmp).Decided == null,
+                   "route: 팀 설정이 없으면 팀 KB 지도는 건너뛰고 domains.json repos 만");
+        Check.That(DomainReview.Route(new ReviewTarget("acme", "sample-item-api", 8, "u"), map, team with { MyTeams = new List<string> { "pricing" } }, PathRules.Parse("{}"), new[] { "a.cs" }, tmp).Decided == null,
+                   "route: 후보가 아닌 도메인의 repos 는 1단계에 쓰지 않음");
+        // 앱의 순서: 1단계가 정하면 파일을 조회하지 않는다. 못 정하면 조회하고, 조회 실패는 default·"파일 조회 실패"
+        var fetches = 0;
+        Task<List<string>?> NoFiles() { fetches++; return Task.FromResult<List<string>?>(null); }
+        Task<List<string>?> ItemFiles() { fetches++; return Task.FromResult<List<string>?>(new List<string> { "src/Areas/Item/B.cs" }); }
+        Task<List<string>?> Broken() { fetches++; throw new InvalidOperationException("helper 없음"); }
+        var rulesRead = 0;
+        PathRules CountedRules() { rulesRead++; return rules; }
+        var early = await DomainReview.Resolve(new ReviewTarget("acme", "sample.web", 10, "u"), map, team, CountedRules, NoFiles, tmp);
+        Check.That(early.Decided is { Domain: "coupon", Source: DomainReview.Source.TeamMap } && fetches == 0 && rulesRead == 0 && early.Hints.Files.Count == 0,
+                   "route: 1단계가 정하면 파일을 조회하지 않음 (파일 없이 확정)");
+        var failed = await DomainReview.Resolve(new ReviewTarget("example-org", "shared-admin", 11, "u"), map, team, CountedRules, NoFiles, tmp);
+        var thrown = await DomainReview.Resolve(new ReviewTarget("example-org", "shared-admin", 11, "u"), map, team, CountedRules, Broken, tmp);
+        Check.That(failed.Decided == ("default", "파일 조회 실패", DomainReview.Source.Fallback) && thrown.Decided == ("default", "파일 조회 실패", DomainReview.Source.Fallback)
+                   && DomainReview.FetchFailed == "파일 조회 실패" && fetches == 2 && rulesRead == 0,
+                   "route: 1단계가 못 정한 뒤 파일 조회가 실패하면 default (2·3단계 없음)");
+        var later = await DomainReview.Resolve(new ReviewTarget("example-org", "shared-admin", 12, "u"), map, team, CountedRules, ItemFiles, tmp);
+        Check.That(later.Decided is { Domain: "product", Source: DomainReview.Source.PathRule } && fetches == 3 && rulesRead == 1 && later.Hints.Files.SequenceEqual(new[] { "src/Areas/Item/B.cs" }),
+                   "route: 1단계가 못 정하면 파일을 조회해 2단계");
+        var cands = DomainReview.Candidates(map, team);
+        Check.That(DomainReview.Extract("```pokemate-domain\n{\"domain\": \"product\", \"why\": \"상품 화면\"}\n```", cands) is { Domain: "product" }
+                   && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"legacy\"}\n```", cands) == null
+                   && DomainReview.Extract("```pokemate-domain\n{\"domain\": \"default\"}\n```", cands)?.Domain == "default", "route: 3단계 답은 후보·default 만");
+        Check.That(DomainReview.Decide("```pokemate-domain\n{\"domain\": \"product\", \"why\": \"상품 화면\"}\n```", cands) == ("product", "상품 화면", DomainReview.Source.Chosen)
+                   && DomainReview.Decide("```pokemate-domain\n{\"domain\": \"default\", \"why\": \"맞는 도메인 없음\"}\n```", cands) == ("default", "맞는 도메인 없음", DomainReview.Source.Fallback)
+                   && DomainReview.Decide("```pokemate-domain\n{\"domain\": \"default\"}\n```", cands) == ("default", "도메인을 정하지 못해 default 로 리뷰", DomainReview.Source.Fallback)
+                   && DomainReview.Decide("```pokemate-domain\n{\"domain\": \"legacy\"}\n```", cands) == ("default", "도메인을 정하지 못해 default 로 리뷰", DomainReview.Source.Fallback)
+                   && DomainReview.Decide(null, cands) == ("default", "도메인을 정하지 못해 default 로 리뷰", DomainReview.Source.Fallback),
+                   "route: 3단계 답 판정 (후보 Chosen, default·못 읽음·실패는 Fallback, 이유 없는 default 는 정하지 못함)");
+        var routeChooser = DomainReview.ChoosePrompt(new ReviewTarget("example-org", "shared-admin", 3, "u"), map, team with { RepoGuide = "example-org/repo-guide" }, shared.Hints, "H");
+        Check.That(routeChooser.Contains("- product (product 팀)") && routeChooser.Contains("H gh-get repos/example-org/repo-guide/contents/maps/example-org/shared-admin.md")
+                   && routeChooser.Contains("경로 규칙 후보: coupon 1개, product 1개") && routeChooser.Contains("shared-admin.md") && routeChooser.Contains("default"), "route: 3단계 안내에 후보·팀·레포 지도·공용 문서·규칙 후보");
+        Check.That(routeChooser.Contains("- coupon (pricing 팀) · 쿠폰 · 키워드: coupon") && routeChooser.Contains("src/Areas/Item/B.cs") && !routeChooser.Contains("pulls/3/files")
+                   && !routeChooser.Contains("\\"), "route: 3단계 안내에 바뀐 파일 목록, 경로는 / 구분");
+        var many = DomainReview.ChoosePrompt(new ReviewTarget("acme", "sample-web", 5, "u"), map, team,
+                                             new RouteHints(Enumerable.Range(1, 203).Select(i => $"f{i}.cs").ToList(), Array.Empty<string>(), new[] { "coupon", "discount" }, new Dictionary<string, int>()), "H");
+        Check.That(many.Contains("f200.cs") && !many.Contains("f201.cs") && many.Contains("외 3개") && many.Contains("1단계 후보: coupon, discount") && !many.Contains("팀 KB 지도 후보"), "route: 바뀐 파일은 200개까지, 1단계 후보");
+        var body = DomainReview.ReviewPrompt(new ReviewTarget("acme", "sample.web", 1, "u"), "coupon", "pricing 팀 KB raw/coupon/repos/Sample.Web.md", DomainReview.Source.TeamMap, true, notes, "H", "본문");
+        Check.That(body.Contains("도메인: coupon — 팀 KB 지도: pricing 팀 KB raw/coupon/repos/Sample.Web.md"), "route: 확인한 범위 첫 줄 형식");
+        Check.Remove(tmp);
 
         var rows = """[{"kind":"settings","id":"automation","domainNotesDir":"~/kb/notes"},{"id":"jira"}]""";
         Check.That(DomainNotes.RootFromConnections(rows, @"C:\u") == @"C:\u\kb\notes" && DomainNotes.RootFromConnections(null, @"C:\u") == @"C:\u\.claude\references\notes"
@@ -94,24 +186,11 @@ public static class DomainReviewChecks
                    "notes: 노트 폴더가 링크(정션)면 실제 경로로 (Claude 권한은 실제 경로로 판단)");
         Check.Remove(linkBase);
 
-        // review-domains.json: 맥과 같은 모양 (repos → {domain, why, at(ISO 8601)}), 키 정렬
-        var dir = Check.TempDir("pm-review");
-        var file = Path.Combine(dir, "automation", "state", "review-domains.json");
-        var saved = new ReviewDomainBook { Repos = { ["acme/b"] = new ReviewDomainChoice("acme", "쿠폰함", DateTimeOffset.FromUnixTimeSeconds(1_800_000_000)), ["acme/a"] = new ReviewDomainChoice("beta", "x", DateTimeOffset.FromUnixTimeSeconds(1_800_000_060)) } };
-        var ok = saved.Save(file);
-        var text = File.ReadAllText(file);
-        Check.That(ok && ReviewDomainBook.Load(file).Repos.Count == 2 && ReviewDomainBook.Load(file).Repos["acme/b"] == saved.Repos["acme/b"]
-                   && text.Contains("\"at\": \"2027-01-15T08:00:00Z\"") && text.IndexOf("acme/a", StringComparison.Ordinal) < text.IndexOf("acme/b", StringComparison.Ordinal),
-                   "review: review-domains.json 저장·읽기 (ISO 8601, 키 정렬)");
-        File.WriteAllText(file, "{\"repos\":{\"acme/x\":{\"domain\":\"a");
-        Check.That(ReviewDomainBook.Load(file).Repos.Count == 0 && ReviewDomainBook.Load(Path.Combine(dir, "없음.json")).Repos.Count == 0, "review: 깨진·없는 review-domains.json 은 빈 값");
-        Check.Remove(dir);
-        Check.That(DomainReviewPaths(), "review: 기록 파일은 데이터 폴더의 automation\\state 아래, 도메인 지도 파일은 local\\domains.json");
+        Check.That(DomainReviewPaths(), "review: 도메인 지도 파일은 local\\domains.json, 세션·파이프라인은 데이터 폴더의 automation 아래");
     }
 
     static bool DomainReviewPaths() =>
-        ReviewDomainBook.File == Path.Combine(AppPaths.DataDir, "automation", "state", "review-domains.json")
-        && DomainMap.File == AppPaths.LocalFile("domains.json")
+        DomainMap.File == AppPaths.LocalFile("domains.json")
         && WorkSessionBook.File == Path.Combine(AppPaths.DataDir, "automation", "sessions.json")
         && PipelineState.Dir() == Path.Combine(AppPaths.DataDir, "automation", "pipelines")
         && PipelineAccess.File == AppPaths.LocalFile("pipeline-tools.json");

@@ -1,0 +1,16 @@
+{
+  "myTeams": ["pricing", "product"],
+  "repoGuide": "example-org/repo-guide",
+  "teams": {
+    "pricing": {
+      "kb": "kb/pricing-kb",
+      "repoMap": "raw/{domain}/repos/{repo}.md",
+      "domains": ["coupon", "discount"]
+    },
+    "product": {
+      "kb": "kb/product-kb",
+      "repoMap": null,
+      "domains": ["product"]
+    }
+  }
+}

@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -29,119 +28,285 @@ public sealed record ReviewTarget(string Owner, string Repo, int Number, string 
     }
 }
 
-/// 레포마다 정해 둔 도메인 (PR 내용으로 정한 것). `review-domains.json` 의 한 칸.
-public sealed record ReviewDomainChoice(string Domain, string Why, DateTimeOffset At);
+/// 도메인 정하기 3단계(PR 판단)에 넘기는 읽을거리. `Files` 는 바뀐 파일, `SharedDocs` 는 팀 KB 공용 문서(`/` 구분 전체 경로),
+/// `MapDomains` 는 1단계(팀 KB 지도·domains.json repos)에서 나온 도메인들, `RuleCounts` 는 2단계 경로 규칙의 도메인 → 파일 수.
+public sealed record RouteHints(IReadOnlyList<string> Files, IReadOnlyList<string> SharedDocs, IReadOnlyList<string> MapDomains, IReadOnlyDictionary<string, int> RuleCounts);
 
-/// `automation\state\review-domains.json`: `{owner}/{repo}` → 정한 도메인. 날짜는 ISO 8601, 키 정렬. 깨졌거나 없으면 빈 값.
-public sealed record ReviewDomainBook
-{
-    public Dictionary<string, ReviewDomainChoice> Repos { get; set; } = new();
-
-    public ReviewDomainBook() { }
-
-    public ReviewDomainBook(IDictionary<string, ReviewDomainChoice> repos) => Repos = new(repos);
-
-    public static string File => Path.Combine(AppPaths.DataDir, "automation", "state", "review-domains.json");
-
-    public static ReviewDomainBook Load(string? from = null)
-    {
-        try
-        {
-            var book = JsonSerializer.Deserialize<ReviewDomainBook>(Paths.ReadShared(from ?? File), Json.Iso8601);
-            if (book == null) return new ReviewDomainBook();
-            book.Repos ??= new();
-            return book.Repos.Values.Any(c => c == null) ? new ReviewDomainBook() : book;
-        }
-        catch { return new ReviewDomainBook(); }
-    }
-
-    /// 실패하면 false (이전 파일은 그대로)
-    public bool Save(string? to = null)
-    {
-        try
-        {
-            AppPaths.WriteAtomic(to ?? File, Json.SortedPretty(this, Json.Iso8601));
-            return true;
-        }
-        catch { return false; }
-    }
-
-    public bool Equals(ReviewDomainBook? o) =>
-        o is not null && Repos.Count == o.Repos.Count && Repos.All(kv => o.Repos.TryGetValue(kv.Key, out var other) && kv.Value == other);
-
-    public override int GetHashCode() => Repos.Count;
-}
-
-/// 맥의 `DomainReview.Source` 의 `rawValue` (사람에게 보이는 글)
+/// 맥의 `DomainReview.Source` 의 `rawValue` (근거 줄의 단계 이름)
 public static class DomainReviewSourceExtensions
 {
     public static string Raw(this DomainReview.Source source) => source switch
     {
-        DomainReview.Source.Explicit => "domains.json 의 repos",
-        DomainReview.Source.Learned => "예전에 정한 기록",
-        _ => "이번에 PR 내용으로 정함",
+        DomainReview.Source.TeamMap => "팀 KB 지도",
+        DomainReview.Source.Listed => "domains.json 의 repos",
+        DomainReview.Source.PathRule => "경로 규칙",
+        DomainReview.Source.Chosen => "PR 판단",
+        _ => "기본값",
     };
 }
 
 /// PR 리뷰를 도메인 리뷰어 세션(`{도메인}:reviewer`)에 맡기는 흐름: 도메인 정하기와 리뷰 프롬프트.
+/// 도메인 정하기: 1. 팀 KB 지도·domains.json repos → (못 정하면) 바뀐 파일 조회(실패하면 default) → 2. 경로 규칙 → 3. PR 판단(Claude) → default. 결과는 저장하지 않는다.
 public static class DomainReview
 {
     public const string Tag = "pokemate-domain";
     public const string Fallback = DomainMap.DefaultKey;
+    /// 3단계 안내에 넣는 바뀐 파일 수 상한
+    public const int FileLimit = 200;
 
-    /// 도메인을 어디서 알았나
-    public enum Source { Explicit, Learned, Chosen }
+    /// 도메인을 어디서 알았나 (단계)
+    public enum Source { TeamMap, Listed, PathRule, Chosen, Fallback }
 
     static readonly Regex Block = new("```" + Tag + @"[ \t]*\r?\n(.*?)```", RegexOptions.Singleline);
 
+    /// 지도 전체 기준 (평가 문제의 고정 도메인 확인용)
     public static bool Valid(string domain, DomainMap map) => domain == Fallback || map.Domains.ContainsKey(domain);
 
-    /// 이미 아는 도메인: domains.json 의 repos → 예전에 정해 둔 기록(아직 있는 도메인일 때). 모르면 null (도메인 정하기로).
-    public static (string Domain, string Why, Source Source)? Known(ReviewTarget target, DomainMap map, ReviewDomainBook book)
+    /// 도메인 후보: 내 팀들의 도메인(`TeamConfig.Candidates`), 팀 설정이 없으면 domains.json 의 모든 도메인(이름순). default 는 따로.
+    public static IReadOnlyList<string> Candidates(DomainMap map, TeamConfig? team) =>
+        team?.Candidates(map) ?? map.Domains.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+
+    /// domains.json 의 repos 에 이 레포가 있는 도메인 (이름순 첫 번째, 레포 이름은 대소문자 무시). 평가용.
+    public static (string Domain, string Why, Source Source)? Listed(ReviewTarget target, DomainMap map) =>
+        ListedHits(target, map, map.Domains.Keys.OrderBy(k => k, StringComparer.Ordinal)).Select(h => ((string, string, Source)?)h).FirstOrDefault();
+
+    static IEnumerable<(string Domain, string Why, Source Source)> ListedHits(ReviewTarget target, DomainMap map, IEnumerable<string> candidates) =>
+        candidates.Where(d => map.Domains.TryGetValue(d, out var repos) && repos.Any(r => string.Equals(r, target.Repo, StringComparison.OrdinalIgnoreCase)))
+            .Select(d => (d, $"domains.json 의 {d} repos 에 {target.Repo} 가 있음", Source.Listed));
+
+    /// 1단계. 내 팀마다 `repoMap` 의 `{domain}` 자리 폴더를 훑어 `{repo}` 문서를 대소문자 무시로 찾는다.
+    /// 폴더가 그 팀의 후보 도메인이면 Hit(`TeamMap`), 아니면 그 문서를 공용 문서(`SharedDocs`, `/` 구분 전체 경로)로 넘긴다. 팀 KB 폴더가 없으면 건너뛴다.
+    /// 쓸 수 있는 팀 도메인(domains.json 에 있는 것)이 하나도 없으면 팀 KB 는 훑지 않는다.
+    /// 이어서 후보 도메인의 domains.json repos 에 레포가 있으면 Hit(`Listed`).
+    public static (List<(string Domain, string Why, Source Source)> Hits, List<string> SharedDocs) MapLookup(ReviewTarget target, DomainMap map, TeamConfig? team,
+                                                                                                         IReadOnlyList<string> candidates, string? home = null)
     {
-        var domain = map.Domains.Keys.OrderBy(k => k, StringComparer.Ordinal).FirstOrDefault(k => map.Domains[k].Contains(target.Repo));
-        if (domain != null) return (domain, $"domains.json 의 {domain} repos 에 {target.Repo} 가 있음", Source.Explicit);
-        if (book.Repos.TryGetValue(target.FullName, out var learned) && Valid(learned.Domain, map)) return (learned.Domain, learned.Why, Source.Learned);
-        return null;
+        home ??= Paths.Home;
+        var hits = new List<(string Domain, string Why, Source Source)>();
+        var shared = new List<string>();
+        // 쓸 수 있는 팀(domains.json 에 있는 도메인을 가진 팀)이 하나도 없으면 팀 KB 지도는 건너뛰고 domains.json repos 만 본다 (스펙 4-2)
+        var mine = team?.Mine() ?? new List<(string Team, TeamEntry Entry)>();
+        if (!mine.Any(m => m.Entry.Domains.Any(map.Domains.ContainsKey))) mine.Clear();
+        foreach (var (name, entry) in mine)
+        {
+            if (entry.RepoMap is not string pattern) continue;
+            foreach (var doc in RepoDocs(DomainMap.ResolvePath(entry.Kb, home), pattern, target.Repo))
+            {
+                var domain = entry.Domains.FirstOrDefault(d => candidates.Contains(d) && string.Equals(d, doc.Folder, StringComparison.OrdinalIgnoreCase));
+                if (domain != null) hits.Add((domain, $"{name} 팀 KB {doc.Relative}", Source.TeamMap));
+                else if (!shared.Contains(doc.Full)) shared.Add(doc.Full);
+            }
+        }
+        hits.AddRange(ListedHits(target, map, candidates));
+        return (hits, shared);
     }
 
-    /// 리뷰하지 않고 도메인만 정하게 하는 프롬프트 (읽기만)
-    public static string ChoosePrompt(ReviewTarget target, DomainMap map, string helper)
+    /// 팀 KB 에서 `pattern` 의 `{domain}` 자리 폴더(이름순)마다 `{repo}` 문서를 찾는다. 경로 조각은 대소문자 무시, 결과는 실제 이름.
+    /// `Folder` 는 `{domain}` 자리 값, `Relative` 는 팀 KB 안의 `/` 구분 경로. `{domain}` 이 없는 패턴·없는 폴더는 빈 목록.
+    static List<(string Folder, string Relative, string Full)> RepoDocs(string kb, string pattern, string repo)
     {
-        var lines = map.Domains.Keys.OrderBy(k => k, StringComparer.Ordinal).Select(name =>
+        var found = new List<(string Folder, string Relative, string Full)>();
+        var parts = pattern.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries).Where(p => p != ".").ToArray();
+        var at = Array.FindIndex(parts, p => p.Contains("{domain}", StringComparison.Ordinal));
+        if (at < 0 || at == parts.Length - 1) return found;
+        try
         {
-            var parts = new List<string> { $"- {name}" };
+            var dir = kb;
+            var head = new List<string>();
+            for (var i = 0; i < at; i++)
+            {
+                if (Child(dir, parts[i].Replace("{repo}", repo), file: false) is not string name) return found;
+                dir = Path.Combine(dir, name);
+                head.Add(name);
+            }
+            var slot = parts[at];
+            var k = slot.IndexOf("{domain}", StringComparison.Ordinal);
+            var pre = slot[..k].Replace("{repo}", repo);
+            var post = slot[(k + "{domain}".Length)..].Replace("{repo}", repo);
+            foreach (var folder in Directory.GetDirectories(dir).Select(Path.GetFileName).OfType<string>().OrderBy(n => n, StringComparer.Ordinal))
+            {
+                if (folder.Length <= pre.Length + post.Length || !folder.StartsWith(pre, StringComparison.OrdinalIgnoreCase)
+                    || !folder.EndsWith(post, StringComparison.OrdinalIgnoreCase)) continue;
+                var domain = folder[pre.Length..(folder.Length - post.Length)];
+                var current = Path.Combine(dir, folder);
+                var relative = new List<string>(head) { folder };
+                var ok = true;
+                for (var j = at + 1; j < parts.Length && ok; j++)
+                {
+                    var want = parts[j].Replace("{repo}", repo).Replace("{domain}", domain);
+                    if (Child(current, want, file: j == parts.Length - 1) is string name)
+                    {
+                        current = Path.Combine(current, name);
+                        relative.Add(name);
+                    }
+                    else ok = false;
+                }
+                if (ok) found.Add((domain, string.Join("/", relative), Paths.ForwardSlashes(current)));
+            }
+        }
+        catch { }
+        return found;
+    }
+
+    /// 폴더 안에서 이름이 대소문자 무시로 같은 파일(또는 폴더)의 실제 이름. 없으면 null.
+    static string? Child(string dir, string name, bool file)
+    {
+        try
+        {
+            return (file ? Directory.GetFiles(dir) : Directory.GetDirectories(dir)).Select(Path.GetFileName).OfType<string>()
+                .OrderBy(n => n, StringComparer.Ordinal).FirstOrDefault(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        }
+        catch { return null; }
+    }
+
+    /// 바뀐 파일 조회에 실패했을 때의 근거 (default 로 리뷰)
+    public const string FetchFailed = "파일 조회 실패";
+
+    /// 1단계 결과. `Decided` 는 1단계 도메인이 정확히 하나일 때 첫 Hit, `MapDomains` 는 1단계 도메인들(중복 없이 나온 순서).
+    public sealed record RouteStart(IReadOnlyList<string> Candidates, (string Domain, string Why, Source Source)? Decided, IReadOnlyList<string> SharedDocs,
+                                    IReadOnlyList<string> MapDomains);
+
+    /// 1단계(팀 KB 지도·domains.json repos). 바뀐 파일이 필요 없다.
+    public static RouteStart Start(ReviewTarget target, DomainMap map, TeamConfig? team, string? home = null)
+    {
+        var candidates = Candidates(map, team);
+        var (hits, shared) = MapLookup(target, map, team, candidates, home);
+        var domains = hits.Select(h => h.Domain).Distinct().ToList();
+        return new RouteStart(candidates, domains.Count == 1 ? hits[0] : null, shared, domains);
+    }
+
+    /// 1단계에 이어 2단계(경로 규칙). 1단계가 정했으면 그 Hit, 아니면 경로 규칙이 한 도메인이면 `PathRule`.
+    /// 못 정하면 `Decided` 는 null 이고 `Hints` 를 3단계(`ChoosePrompt`)에 넘긴다.
+    public static ((string Domain, string Why, Source Source)? Decided, RouteHints Hints) Finish(ReviewTarget target, RouteStart start, PathRules rules,
+                                                                                                  IReadOnlyList<string> files)
+    {
+        if (start.Decided is { } hit) return (hit, new RouteHints(files, start.SharedDocs, start.MapDomains, new Dictionary<string, int>()));
+        var verdict = rules.Judge(target.FullName, files, start.Candidates);
+        var hints = new RouteHints(files, start.SharedDocs, start.MapDomains, verdict.Counts);
+        if (verdict.Domain is string domain) return ((domain, RuleWhy(rules, target.FullName, files, start.Candidates, domain), Source.PathRule), hints);
+        return (null, hints);
+    }
+
+    /// 1·2단계로 도메인을 정한다 (바뀐 파일을 이미 알 때). `Start` → `Finish`.
+    public static ((string Domain, string Why, Source Source)? Decided, RouteHints Hints) Route(ReviewTarget target, DomainMap map, TeamConfig? team, PathRules rules,
+                                                                                               IReadOnlyList<string> files, string? home = null) =>
+        Finish(target, Start(target, map, team, home), rules, files);
+
+    /// 앱의 도메인 정하기 순서: 1단계가 정하면 바뀐 파일을 조회하지 않는다. 못 정하면 `fetch` 로 바뀐 파일을 조회하고
+    /// (실패·예외면 default·`FetchFailed`) 2단계. `Decided` 가 null 이면 `Hints` 를 3단계에 넘긴다. `rules` 는 2단계에 갈 때만 읽는다.
+    public static async Task<((string Domain, string Why, Source Source)? Decided, RouteHints Hints)> Resolve(ReviewTarget target, DomainMap map, TeamConfig? team,
+                                                                                                             Func<PathRules> rules, Func<Task<List<string>?>> fetch,
+                                                                                                             string? home = null)
+    {
+        var start = Start(target, map, team, home);
+        if (start.Decided is { } hit) return (hit, new RouteHints(Array.Empty<string>(), start.SharedDocs, start.MapDomains, new Dictionary<string, int>()));
+        List<string>? files;
+        try { files = await fetch(); }
+        catch { files = null; }   // helper 를 실행하지 못함 → 파일 조회 실패
+        if (files == null)
+            return ((Fallback, FetchFailed, Source.Fallback), new RouteHints(Array.Empty<string>(), start.SharedDocs, start.MapDomains, new Dictionary<string, int>()));
+        return Finish(target, start, rules(), files);
+    }
+
+    /// 경로 규칙 근거: 그 도메인 규칙 중 처음 맞은 파일이 가장 많은 규칙(같으면 앞 규칙)의 와일드카드 앞 폴더와 그 규칙의 파일 수.
+    /// 예: `src/Areas/Item 아래 1개 파일`
+    static string RuleWhy(PathRules rules, string fullName, IReadOnlyList<string> files, IReadOnlyCollection<string> candidates, string domain)
+    {
+        var active = rules.Repos.TryGetValue(fullName, out var all) ? all.Where(r => candidates.Contains(r.Domain)).ToList() : new List<PathRule>();
+        var counts = new int[active.Count];
+        foreach (var file in files)
+        {
+            var i = active.FindIndex(r => PathRules.Matches(r.Path, file));
+            if (i >= 0) counts[i]++;
+        }
+        var best = -1;
+        for (var i = 0; i < active.Count; i++)
+            if (active[i].Domain == domain && (best < 0 || counts[i] > counts[best])) best = i;
+        if (best < 0) return "";
+        var glob = active[best].Path;
+        return RuleFolder(glob) is string folder ? $"{folder} 아래 {counts[best]}개 파일" : $"{glob} 에 맞는 파일 {counts[best]}개";
+    }
+
+    /// glob 의 첫 와일드카드(`*`·`?`) 앞 폴더. 와일드카드 앞에 폴더가 없으면(`Coupon*/**`·`**/x.cs`) null.
+    static string? RuleFolder(string glob)
+    {
+        var g = glob.Replace('\\', '/');
+        while (g.StartsWith("./", StringComparison.Ordinal) || g.StartsWith("/", StringComparison.Ordinal)) g = g[(g[0] == '.' ? 2 : 1)..];
+        var cut = g.IndexOfAny(new[] { '*', '?' });
+        var head = cut < 0 ? g : g[..cut];
+        var slash = head.LastIndexOf('/');
+        return slash > 0 ? head[..slash] : null;
+    }
+
+    /// 3단계: 리뷰하지 않고 도메인만 정하게 하는 프롬프트 (읽기만). 후보는 `Candidates` 와 default.
+    public static string ChoosePrompt(ReviewTarget target, DomainMap map, TeamConfig? team, RouteHints hints, string helper)
+    {
+        var lines = Candidates(map, team).Select(name =>
+        {
+            var parts = new List<string> { team?.TeamOf(name) is string owner ? $"- {name} ({owner} 팀)" : $"- {name}" };
             if (map.Descriptions.TryGetValue(name, out var text)) parts.Add(text);
             if (map.Keywords.TryGetValue(name, out var words) && words.Count > 0) parts.Add("키워드: " + string.Join(", ", words));
-            if (map.Domains.TryGetValue(name, out var repos) && repos.Count > 0) parts.Add("레포: " + string.Join(", ", repos));
             return string.Join(" · ", parts);
         }).Append($"- {Fallback} · 위 어느 도메인에도 맞지 않을 때");
-        return string.Join("\n",
+        var output = new List<string>
+        {
             "지금은 리뷰하지 말고, 아래 PR 이 어느 도메인 일인지만 정한다. 읽기만 한다(GitHub·Jira 쓰기, 알림, 파일 쓰기 금지).",
             $"- PR: {target.Url}",
             "- 볼 것 (명령은 한 번에 하나씩, 전체 명령 그대로):",
             $"  `{helper} gh-get repos/{target.FullName}/pulls/{target.Number} --jq '{{title,body}}'`",
-            $"  `{helper} gh-get repos/{target.FullName}/pulls/{target.Number}/files --jq '[.[].filename]'`",
             $"  제목·본문에 Jira 키가 있으면 `{helper} jira-get --key {{KEY}}` 의 요약",
+        };
+        if (hints.Files.Count == 0)
+            output.Add($"  `{helper} gh-get repos/{target.FullName}/pulls/{target.Number}/files --jq '[.[].filename]'`");
+        if (team?.RepoGuide is string guide)
+            output.Add($"  전사 레포 지도의 이 레포 문서(없으면 건너뛴다): `{helper} gh-get repos/{guide}/contents/maps/{target.Owner}/{target.Repo}.md --jq '.content | @base64d'`");
+        output.AddRange(hints.SharedDocs.Select(doc => $"  팀 KB 공용 문서: `{Paths.ForwardSlashes(doc)}`"));
+        if (hints.Files.Count > 0)
+        {
+            output.Add($"- 바뀐 파일 ({hints.Files.Count}개):");
+            output.AddRange(hints.Files.Take(FileLimit).Select(f => $"  - {f}"));
+            if (hints.Files.Count > FileLimit) output.Add($"  - 외 {hints.Files.Count - FileLimit}개");
+        }
+        if (hints.RuleCounts.Count > 0)
+            output.Add("- 경로 규칙 후보: " + string.Join(", ", hints.RuleCounts.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key} {kv.Value}개")));
+        if (hints.MapDomains.Count > 0)
+            output.Add("- 1단계 후보: " + string.Join(", ", hints.MapDomains));
+        output.AddRange(new[]
+        {
             "- 도메인 목록:",
             string.Join("\n", lines),
-            $"PR 의 제목·본문·파일 경로·Jira 요약에 나온 단어가 어느 도메인의 설명·키워드·레포와 맞는지로 고른다. 애매하면 더 많이 맞는 쪽, 하나도 안 맞으면 {Fallback}.",
+            $"PR 의 제목·본문·파일 경로·Jira 요약·레포 문서에 나온 단어가 어느 도메인의 설명·키워드와 맞는지로 고른다. 애매하면 더 많이 맞는 쪽, 하나도 안 맞으면 {Fallback}.",
+            $"조회가 실패하면 레포 이름만으로 고르지 말고 {Fallback} 로 답한다.",
             "답 끝에 아래 블록 하나만 붙인다.",
             "```" + Tag,
             "{\"domain\": \"도메인 이름\", \"why\": \"고른 이유 한 줄 (어떤 단어·파일이 어느 설명·키워드와 맞는지)\"}",
-            "```");
+            "```",
+        });
+        return string.Join("\n", output);
     }
 
-    /// 도메인 정하기 답에서 마지막 블록을 읽는다. 없는 도메인이면 null (default 는 됨).
-    public static (string Domain, string Why)? Extract(string text, DomainMap map)
+    /// 도메인 정하기 답에서 마지막 블록을 읽는다. 후보가 아니면 null (default 는 됨). `why` 의 공백 묶음(줄바꿈 포함)은 빈칸 하나로.
+    public static (string Domain, string Why)? Extract(string text, IReadOnlyCollection<string> candidates)
     {
         var m = Block.Matches(text).LastOrDefault();
         if (m == null || Json.ParseObject(m.Groups[1].Value) is not JsonObject obj) return null;
         if (Json.Str(obj["domain"]) is not string raw) return null;
         var domain = SwiftText.TrimSpaces(raw);
-        if (!Valid(domain, map)) return null;
-        var why = SwiftText.Trim(Json.Str(obj["why"]) ?? "");
+        if (domain != Fallback && !candidates.Contains(domain)) return null;
+        // 근거는 한 줄로: 줄바꿈·탭을 포함한 공백 묶음을 빈칸 하나로 (앞뒤 공백은 없앤다)
+        var why = string.Join(" ", (Json.Str(obj["why"]) ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         return (domain, why.Length == 0 ? "이유 없음" : why);
+    }
+
+    /// 도메인을 정하지 못했을 때의 근거 (3단계 실패·판정 실패)
+    public const string Undecided = "도메인을 정하지 못해 " + Fallback + " 로 리뷰";
+
+    /// 3단계 답(실행 실패면 null)으로 정한 도메인. 후보면 `Chosen`, default 면 `Fallback`(이유가 없으면 `Undecided`), 못 읽으면 default·`Undecided`.
+    public static (string Domain, string Why, Source Source) Decide(string? answer, IReadOnlyCollection<string> candidates)
+    {
+        if (answer == null || Extract(answer, candidates) is not { } choice) return (Fallback, Undecided, Source.Fallback);
+        if (choice.Domain != Fallback) return (choice.Domain, choice.Why, Source.Chosen);
+        return (Fallback, choice.Why == "이유 없음" ? Undecided : choice.Why, Source.Fallback);
     }
 
     public static string SessionKey(string domain) => PipelineRoleExtensions.SessionKey(domain, PipelineRole.Reviewer);
@@ -159,7 +324,7 @@ public static class DomainReview
             $"이번 건: {target.Label} 리뷰 · 도메인 {domain} ({source.Raw()}: {why}) · 세션 {session}",
             start,
             notes.PromptLines(domain, helper, target.Label),
-            $"- 리뷰 본문 \"확인한 범위\" 첫 줄에 \"도메인: {domain} — {why}\" 를 적고, 시작 알림 result 끝에도 \" · 도메인 {domain}\" 을 붙인다.",
+            $"- 리뷰 본문 \"확인한 범위\" 첫 줄에 \"도메인: {domain} — {source.Raw()}: {why}\" 를 적고, 시작 알림 result 끝에도 \" · 도메인 {domain}\" 을 붙인다.",
             $"- 주변 코드: 로컬 레포 폴더(~/Workspace/{target.Repo})가 없으면 `{helper} gh-file --repo {target.FullName} --ref {{head sha}} --path {{파일 경로}}` 로 읽는다(이 PR 저장소만 된다). 그래도 못 읽으면 \"확인한 범위\" 에 적는다.",
             "",
             context);

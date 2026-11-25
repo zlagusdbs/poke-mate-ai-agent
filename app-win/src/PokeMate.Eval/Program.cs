@@ -77,7 +77,6 @@ var outPath = outDir ?? Path.Combine(settings.RepoDir, "local", "eval", "runs", 
 try { Directory.CreateDirectory(outPath); } catch { }
 var helper = PipelineAccess.Helper(settings);
 var map = DomainMap.Load();
-var domainBook = ReviewDomainBook.Load();
 var notes = DomainNotes.Load();
 var home = Paths.Home;
 var bookFile = Path.Combine(outPath, "sessions.json");
@@ -180,7 +179,7 @@ foreach (var item in cases)
     else
     {
         if (ReviewTarget.Parse(item.Url) is not { } target) continue;
-        var chosen = ReviewEval.Domain(item, target, map, domainBook);
+        var chosen = ReviewEval.Domain(item, target, map);
         domain = chosen.Domain;
         caseLabel = target.Label;
         if (reuse != null)
