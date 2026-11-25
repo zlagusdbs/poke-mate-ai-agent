@@ -103,6 +103,9 @@ public static class SessionPolicyChecks
                    && Handoffs.Findings("결함: pricing.py:9 0 나누기\n결함 없이 미확인만 있음").SequenceEqual(new[] { "결함: pricing.py:9 0 나누기" })
                    && Handoffs.Findings("결함마다 파일:줄\n- 이건 아님").Count == 0,
                    "handoff: '없음'·머리말이 아닌 줄은 지적으로 치지 않음");
+        var answer = "[r#1](https://x/pull/1) · 댓글 · 결함 1건\n결함:\n- a.py:3 음수 가격\n미확인(질문): 없음\n확인한 범위:\n- 도메인: coupon — 경로 규칙: x\n- 못 읽은 것: 없음\n참고한 근거:\n- 점검표";
+        Check.That(Handoffs.Findings(answer).SequenceEqual(new[] { "결함: a.py:3 음수 가격" }),
+                   "handoff: 마지막 답 뒤의 확인한 범위·참고한 근거 항목은 지적으로 치지 않음");
         Check.That(Handoffs.Summary("다음에 할 일", "답 본문\n```pokemate-next\n{\"next\": \"pm\"}\n```") == "다음에 할 일\n답: 답 본문"
                    && Handoffs.Summary("", "한 줄 답") == "한 줄 답" && Chars(Handoffs.Summary(new string('가', 900), "x")) == 600,
                    "handoff: 요약은 note 와 답 앞부분 (600자 안, 새로 묻지 않음)");
