@@ -872,6 +872,11 @@ do {
     check(ClaudeAccount.parse(Data(#"{"loggedIn":false}"#.utf8))?.display == "로그인 안 됨", "account: 로그인 안 됨")
     let limit = #"{"type":"result","is_error":true,"result":"You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit"}"#
     check(ClaudeResponse.parse(stdout: Data(limit.utf8), exitCode: 1) == .failure(.usageLimit), "account: 개인 사용 한도 오류")
+    let url = "https://claude.com/cai/oauth/authorize?code=true&state=abc"
+    let linked = "Opening browser to sign in…\nIf the browser didn't open, visit:\n\u{1B}]8;;" + url + "\u{07}" + url + "\u{1B}]8;;\u{07}\nPaste code here if prompted > "
+    check(ClaudeLogin.signInURL(linked) == url, "login: 터미널 링크로 감싼 로그인 주소를 읽음")
+    check(ClaudeLogin.signInURL("Sign in at:\n\u{1B}[1m" + url + "\u{1B}[0m\nPaste code here > ") == url, "login: Sign in at 아래 주소, 색 코드 제거")
+    check(ClaudeLogin.signInURL("Opening browser to sign in…\nPaste code here if prompted > ") == nil, "login: 주소가 없으면 nil")
     check(AppPaths.processEnvironment(settings: .default)["CLAUDE_CONFIG_DIR"] == AppPaths.claudeConfigDir.path, "account: 메이트는 항상 전용 로그인 폴더")
 }
 

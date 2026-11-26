@@ -9,6 +9,8 @@ final class ChatSession: ObservableObject {
     @Published private(set) var lastFailedPrompt: String?
     private var lastFailedImages: [ImageAttachment] = []
     @Published private(set) var loginState: LoginState = .idle
+    /// claude 가 알려 준 로그인 주소. 브라우저가 안 떴을 때 카드에서 직접 연다.
+    @Published private(set) var loginURL: String?
     @Published private(set) var activity: String?
     @Published private(set) var pendingPermission: PermissionRequest?
     private var permissionAnswer: CheckedContinuation<PermissionDecision, Never>?
@@ -294,13 +296,15 @@ final class ChatSession: ObservableObject {
 
     /// `claude auth login` 을 실행해 브라우저를 띄우고, 로그인되면 질문을 다시 보낸다.
     func startLogin(retry prompt: String?) {
+        loginURL = nil
         loginState = .waitingBrowser
         login.start(settings: settings()) { [weak self] event in
             guard let self else { return }
             switch event {
             case .browserOpened:
                 break
-            case .needsCode:
+            case .needsCode(let url):
+                self.loginURL = url
                 if self.loginState == .waitingBrowser { self.loginState = .needsCode }
             case .finished(let ok):
                 self.loginState = .idle
