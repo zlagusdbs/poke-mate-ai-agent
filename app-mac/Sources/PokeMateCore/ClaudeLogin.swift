@@ -5,7 +5,7 @@ import Foundation
 public final class ClaudeLogin: @unchecked Sendable {
     public enum Event: Equatable {
         case browserOpened      // 브라우저를 띄웠다
-        case needsCode          // 브라우저에 나온 코드를 붙여넣어야 한다
+        case needsCode(String?) // 브라우저에 나온 코드를 붙여넣어야 한다. 값은 claude 가 알려 준 로그인 주소 (못 찾으면 nil)
         case finished(Bool)     // 로그인 성공 여부
     }
 
@@ -63,7 +63,8 @@ public final class ClaudeLogin: @unchecked Sendable {
             }
             if !self.askedCode, self.buffer.localizedCaseInsensitiveContains("paste code") {
                 self.askedCode = true
-                DispatchQueue.main.async { onEvent(.needsCode) }
+                let url = Self.signInURL(self.buffer)
+                DispatchQueue.main.async { onEvent(.needsCode(url)) }
             }
         }
         process.terminationHandler = { [weak self] _ in
@@ -81,6 +82,17 @@ public final class ClaudeLogin: @unchecked Sendable {
         } catch {
             onEvent(.finished(false))
         }
+    }
+
+    /// `claude auth login` 출력에서 로그인 주소 ("If the browser didn't open, visit:" 또는 "Sign in at:" 아래 줄).
+    /// 터미널 링크·색 제어 문자는 지우고 첫 https 주소를 쓴다. 없으면 nil.
+    public static func signInURL(_ output: String) -> String? {
+        let plain = output.replacingOccurrences(of: #"\x{1B}\][^\x{07}\x{1B}]*(?:\x{07}|\x{1B}\)|\x{1B}\[[0-9;?]*[A-Za-z]"#,
+                                                with: "", options: .regularExpression)
+        let marker = plain.range(of: "visit:") ?? plain.range(of: "Sign in at:")
+        let rest = plain[(marker?.lowerBound ?? plain.startIndex)...]
+        guard let found = rest.range(of: #"https://[^\s\x{07}\x{1B}]+"#, options: .regularExpression) else { return nil }
+        return String(rest[found])
     }
 
     public func submit(code: String) {

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace PokeMate.Core;
 
@@ -11,8 +12,8 @@ public sealed class ClaudeLogin
     {
         /// 브라우저를 띄웠다
         public sealed record BrowserOpened : Event;
-        /// 브라우저에 나온 코드를 붙여넣어야 한다
-        public sealed record NeedsCode : Event;
+        /// 브라우저에 나온 코드를 붙여넣어야 한다. Url 은 claude 가 알려 준 로그인 주소 (브라우저가 안 떴을 때 직접 연다, 못 찾으면 null).
+        public sealed record NeedsCode(string? Url) : Event;
         /// 로그인 성공 여부
         public sealed record Finished(bool Ok) : Event;
     }
@@ -82,6 +83,7 @@ public sealed class ClaudeLogin
         void OnChunk(string chunk)
         {
             bool opened, needs = false;
+            string? url = null;
             lock (gate)
             {
                 buffer += chunk;
@@ -90,10 +92,11 @@ public sealed class ClaudeLogin
                 {
                     askedCode = true;
                     needs = true;
+                    url = SignInUrl(buffer);
                 }
             }
             if (opened) Post(new Event.BrowserOpened());
-            if (needs) Post(new Event.NeedsCode());
+            if (needs) Post(new Event.NeedsCode(url));
         }
         var outRead = ReadChunks(p.StandardOutput, OnChunk);
         var errRead = ReadChunks(p.StandardError, OnChunk);
@@ -111,6 +114,20 @@ public sealed class ClaudeLogin
             var ok = await IsLoggedIn(settings);
             Post(new Event.Finished(ok));
         });
+    }
+
+    static readonly Regex Escapes = new(@"\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)|\x1B\[[0-9;?]*[A-Za-z]");
+    static readonly Regex Url = new(@"https://[^\s\x07\x1B]+");
+
+    /// `claude auth login` 출력에서 로그인 주소 ("If the browser didn't open, visit:" 또는 "Sign in at:" 아래 줄).
+    /// 터미널 링크·색 제어 문자는 지우고 첫 https 주소를 쓴다. 없으면 null.
+    public static string? SignInUrl(string output)
+    {
+        var plain = Escapes.Replace(output, "");
+        var at = plain.IndexOf("visit:", StringComparison.Ordinal);
+        if (at < 0) at = plain.IndexOf("Sign in at:", StringComparison.Ordinal);
+        var match = Url.Match(plain, Math.Max(0, at));
+        return match.Success ? match.Value : null;
     }
 
     internal static async Task ReadChunks(StreamReader reader, Action<string> onChunk)

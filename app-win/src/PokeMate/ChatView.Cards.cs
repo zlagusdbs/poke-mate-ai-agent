@@ -505,6 +505,15 @@ public sealed partial class ChatView
             case LoginState.NeedsCode:
             {
                 panel.Children.Add(Ui.Text("브라우저에 나온 코드를 붙여넣어 주세요.", 13, "TextFg"));
+                if (chat.LoginUrl is { } url)
+                {
+                    var hint = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+                    hint.Children.Add(Ui.Text("브라우저가 안 떴으면 ", 12, "TextSecondary"));
+                    hint.Children.Add(ChatUi.Id(ChatUi.Link("로그인 페이지 열기", () => OpenUrl(url)), "LoginOpenBrowser"));
+                    hint.Children.Add(Ui.Text(" · ", 12, "TextSecondary"));
+                    hint.Children.Add(ChatUi.Link("주소 복사", () => { try { Clipboard.SetText(url); } catch { } }));
+                    panel.Children.Add(hint);
+                }
                 var row = new Grid { Margin = new Thickness(0, 6, 0, 0) };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });

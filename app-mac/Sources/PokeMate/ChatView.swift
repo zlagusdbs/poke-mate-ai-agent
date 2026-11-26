@@ -717,6 +717,18 @@ private struct LoginBox: View {
                 Label("브라우저에서 회사 계정으로 로그인하고 승인해 주세요.", systemImage: "safari")
             case .needsCode:
                 Text("브라우저에 나온 코드를 붙여넣어 주세요.")
+                if let url = chat.loginURL, let link = URL(string: url) {
+                    HStack(spacing: 4) {
+                        Text("브라우저가 안 떴으면").foregroundStyle(.secondary)
+                        Button("로그인 페이지 열기") { NSWorkspace.shared.open(link) }.buttonStyle(.link)
+                        Text("·").foregroundStyle(.secondary)
+                        Button("주소 복사") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(url, forType: .string)
+                        }.buttonStyle(.link)
+                    }
+                    .font(.caption)
+                }
                 HStack {
                     RomanTextField(placeholder: "코드", text: $code, secure: true, onSubmit: submit)
                     Button("확인", action: submit).disabled(code.isEmpty)

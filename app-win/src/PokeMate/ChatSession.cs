@@ -121,6 +121,8 @@ public sealed class ChatSession : NotifyObject
     public bool IsBusy { get => isBusy; private set => Set(ref isBusy, value); }
     public string? LastFailedPrompt { get => lastFailedPrompt; private set => Set(ref lastFailedPrompt, value); }
     public LoginState LoginState { get => loginState; private set => Set(ref loginState, value); }
+    /// claude 가 알려 준 로그인 주소. 브라우저가 안 떴을 때 카드에서 직접 연다.
+    public string? LoginUrl { get; private set; }
     /// 실행 중 한 줄 ("Bash 실행 중: …"). 없으면 "생각 중…"
     public string? Activity { get => activity; private set => Set(ref activity, value); }
     public PermissionRequest? PendingPermission { get => pendingPermission; private set { pendingPermission = value; Raise(); Raise(nameof(PendingPermissions)); } }
@@ -447,6 +449,7 @@ public sealed class ChatSession : NotifyObject
     /// `claude auth login` 을 실행해 브라우저를 띄우고, 로그인되면 질문을 다시 보낸다.
     public void StartLogin(string? retry)
     {
+        LoginUrl = null;
         LoginState = LoginState.WaitingBrowser;
         login.Start(settings(), e =>
         {
@@ -454,7 +457,8 @@ public sealed class ChatSession : NotifyObject
             {
                 case ClaudeLogin.Event.BrowserOpened:
                     break;
-                case ClaudeLogin.Event.NeedsCode:
+                case ClaudeLogin.Event.NeedsCode needs:
+                    LoginUrl = needs.Url;
                     if (loginState == LoginState.WaitingBrowser) LoginState = LoginState.NeedsCode;
                     break;
                 case ClaudeLogin.Event.Finished finished:
